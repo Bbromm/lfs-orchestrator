@@ -15,7 +15,7 @@
 
 ```bash
 # 1. Клонирование
-git clone https://github.com/yourname/lfs-orchestrator.git
+git clone https://github.com/Bbromm/lfs-orchestrator.git
 cd lfs-orchestrator
 
 # 2. Конфигурация
