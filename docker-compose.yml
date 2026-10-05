@@ -1,0 +1,74 @@
+version: "3.9"
+
+services:
+  orchestrator:
+    build:
+      context: .
+      dockerfile: Dockerfile.orchestrator
+    container_name: lfs-orchestrator
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - LFS_ORCH_PORT=8000
+      - LFS_DB_PATH=/data/orchestrator.db
+      - LFS_ROOT=/mnt/lfs
+      - LFS_SOURCES=/mnt/lfs/sources
+      - LFS_LOGS_DIR=/logs
+      - LFS_EXECUTOR=local
+      - LFS_MAX_PARALLEL=4
+    volumes:
+      - ./data:/data
+      - ./logs:/logs
+      - ${LFS_ROOT:-/mnt/lfs}:/mnt/lfs
+      - /var/run/docker.sock:/var/run/docker.sock  # для docker exec
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  prometheus:
+    image: prom/prometheus:v2.55.0
+    container_name: lfs-prometheus
+    restart: unless-stopped
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./config/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.path=/prometheus"
+      - "--storage.tsdb.retention.time=90d"
+      - "--web.enable-lifecycle"
+
+  grafana:
+    image: grafana/grafana:11.3.0
+    container_name: lfs-grafana
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    depends_on:
+      - prometheus
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: lfs-alertmanager
+    restart: unless-stopped
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./config/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+
+volumes:
+  prometheus-data:
+  grafana-data:

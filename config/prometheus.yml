@@ -1,0 +1,20 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    monitor: lfs-orchestrator
+
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets: ['alertmanager:9093']
+
+scrape_configs:
+  - job_name: 'lfs-orchestrator'
+    static_configs:
+      - targets: ['orchestrator:8000']
+    metrics_path: /metrics
+    scrape_interval: 10s

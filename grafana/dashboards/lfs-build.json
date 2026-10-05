@@ -1,0 +1,88 @@
+{
+  "title": "LFS Build Overview",
+  "uid": "lfs-build",
+  "tags": ["lfs", "build"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "10s",
+  "time": {"from": "now-6h", "to": "now"},
+  "panels": [
+    {
+      "id": 1,
+      "title": "Активные сборки",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 0, "y": 0},
+      "targets": [{"expr": "lfs_builds_active", "legendFormat": "Active"}],
+      "options": {"colorMode": "value", "graphMode": "area"}
+    },
+    {
+      "id": 2,
+      "title": "Активные задачи",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 6, "y": 0},
+      "targets": [{"expr": "lfs_tasks_active", "legendFormat": "Tasks"}],
+      "options": {"colorMode": "value", "graphMode": "area"}
+    },
+    {
+      "id": 3,
+      "title": "Ошибок за сессию",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 12, "y": 0},
+      "targets": [{"expr": "sum(increase(lfs_errors_total[1h]))", "legendFormat": "Errors"}],
+      "options": {"colorMode": "background", "thresholds": {"mode": "absolute", "steps": [
+        {"color": "green", "value": null},
+        {"color": "red", "value": 1}
+      ]}}
+    },
+    {
+      "id": 4,
+      "title": "Повторов",
+      "type": "stat",
+      "gridPos": {"h": 4, "w": 6, "x": 18, "y": 0},
+      "targets": [{"expr": "sum(increase(lfs_retries_total[1h]))", "legendFormat": "Retries"}],
+      "options": {"colorMode": "value"}
+    },
+    {
+      "id": 10,
+      "title": "Топ-15 самых долгих задач",
+      "type": "barchart",
+      "gridPos": {"h": 10, "w": 12, "x": 0, "y": 4},
+      "targets": [{
+        "expr": "topk(15, lfs_task_duration_seconds_sum)",
+        "legendFormat": "{{package}}"
+      }],
+      "options": {"orientation": "horizontal"}
+    },
+    {
+      "id": 11,
+      "title": "Время сборки пакетов (avg)",
+      "type": "timeseries",
+      "gridPos": {"h": 10, "w": 12, "x": 12, "y": 4},
+      "targets": [{
+        "expr": "rate(lfs_task_duration_seconds_sum[5m]) / rate(lfs_task_duration_seconds_count[5m])",
+        "legendFormat": "{{package}}"
+      }]
+    },
+    {
+      "id": 20,
+      "title": "Успех/Провал по фазам",
+      "type": "piechart",
+      "gridPos": {"h": 8, "w": 8, "x": 0, "y": 14},
+      "targets": [{
+        "expr": "sum by (status, phase) (increase(lfs_tasks_total[6h]))",
+        "legendFormat": "{{phase}} / {{status}}"
+      }]
+    },
+    {
+      "id": 21,
+      "title": "Текущая фаза",
+      "type": "state-timeline",
+      "gridPos": {"h": 8, "w": 16, "x": 8, "y": 14},
+      "targets": [{
+        "expr": "lfs_current_phase",
+        "legendFormat": "{{phase}}"
+      }]
+    }
+  ]
+}

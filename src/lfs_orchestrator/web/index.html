@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>LFS Orchestrator</title>
+<style>
+  :root {
+    --bg: #1e1e2e; --bg2: #313244; --fg: #cdd6f4; --muted: #9399b2;
+    --accent: #89b4fa; --green: #a6e3a1; --yellow: #f9e2af; --red: #f38ba8;
+    --purple: #cba6f7;
+  }
+  * { box-sizing: border-box; }
+  body { font-family: 'Segoe UI', Tahoma, sans-serif; background: var(--bg);
+         color: var(--fg); margin: 0; padding: 20px; line-height: 1.5; }
+  h1 { color: var(--accent); margin-top: 0; }
+  button { background: var(--accent); color: var(--bg); border: 0; padding: 10px 18px;
+           border-radius: 6px; cursor: pointer; font-weight: 600; margin-right: 8px; }
+  button:hover { opacity: 0.85; }
+  button.danger { background: var(--red); }
+  button.warn   { background: var(--yellow); }
+  .grid { display: grid; gap: 12px; margin-top: 16px; }
+  .phases { grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); }
+  .phase { background: var(--bg2); border-radius: 8px; padding: 14px;
+           border-left: 4px solid var(--muted); }
+  .phase.pending { border-left-color: var(--muted); }
+  .phase.running { border-left-color: var(--yellow); animation: pulse 1.6s infinite; }
+  .phase.done    { border-left-color: var(--green); }
+  .phase.failed  { border-left-color: var(--red); }
+  @keyframes pulse { 50% { opacity: 0.6; } }
+  .phase h3 { margin: 0 0 8px 0; color: var(--purple); font-size: 0.95em; }
+  .tasks { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .task { font-size: 0.75em; padding: 3px 8px; border-radius: 4px;
+          background: var(--bg); border: 1px solid #45475a; }
+  .task.done { color: var(--green); border-color: var(--green); }
+  .task.running { color: var(--yellow); border-color: var(--yellow); }
+  .task.failed { color: var(--red); border-color: var(--red); }
+  .log { background: #181825; border-radius: 8px; padding: 14px;
+         font-family: monospace; font-size: 0.85em; max-height: 400px;
+         overflow-y: auto; white-space: pre-wrap; margin-top: 16px; }
+  .log .info  { color: var(--accent); }
+  .log .warn  { color: var(--yellow); }
+  .log .error { color: var(--red); }
+  .toolbar { display: flex; align-items: center; gap: 12px; margin: 12px 0; flex-wrap: wrap; }
+  .stat { background: var(--bg2); padding: 10px 16px; border-radius: 6px; }
+  .stat b { color: var(--accent); font-size: 1.3em; }
+  .progress { height: 20px; background: var(--bg2); border-radius: 10px; overflow: hidden; margin: 12px 0; }
+  .progress > div { height: 100%; background: linear-gradient(90deg, var(--accent), var(--green));
+                    transition: width 0.5s; }
+  .build-id { font-family: monospace; color: var(--muted); }
+</style>
+</head>
+<body>
+
+<h1>🐧 LFS Orchestrator</h1>
+
+<div class="toolbar">
+  <button id="start-btn">▶ Запустить сборку</button>
+  <button id="pause-btn" class="warn" disabled>⏸ Пауза</button>
+  <button id="resume-btn" class="warn" disabled>▶ Возобновить</button>
+  <button id="stop-btn" class="danger" disabled>⏹ Остановить</button>
+  <span id="build-id" class="build-id"></span>
+</div>
+
+<div class="toolbar">
+  <div class="stat">Задач: <b id="stat-total">0</b></div>
+  <div class="stat">Готово: <b id="stat-done">0</b></div>
+  <div class="stat">Провалено: <b id="stat-failed">0</b></div>
+  <div class="stat">Прогресс: <b id="stat-progress">0%</b></div>
+</div>
+
+<div class="progress"><div id="progress-bar" style="width:0%"></div></div>
+
+<div class="grid phases" id="phases"></div>
+
+<h3>Live-логи</h3>
+<div class="log" id="log"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>
