@@ -1,0 +1,231 @@
+###############################################################################
+# ansible/playbook-lfs.yml — Развёртывание LFS 13.1-systemd через Ansible
+#
+# Использование:
+#   ansible-playbook -i inventory.yml playbook-lfs.yml \
+#       --extra-vars "target_disk=/dev/sda"
+###############################################################################
+---
+- name: Сборка LFS 13.1-systemd
+  hosts: lfs_builders
+  become: yes
+  gather_facts: yes
+
+  vars:
+    lfs_root: /mnt/lfs
+    lfs_version: "13.1-systemd"
+    lfs_build_dir: /root/lfs-build
+    target_disk: "{{ target_disk | default('/dev/sda') }}"
+    run_tests: "0"
+    notify_telegram: false
+
+  tasks:
+    # -------------------------------------------------------------------------
+    - name: Проверка корневых прав
+      assert:
+        that: ansible_user_id == "root"
+        fail_msg: "Плейбук требует root"
+
+    - name: Проверка места на диске
+      assert:
+        that: (ansible_mounts | selectattr('mount', 'equalto', '/') | list | first).size_available > 30 * 1024 * 1024 * 1024
+        fail_msg: "Недостаточно свободного места на /"
+
+    # -------------------------------------------------------------------------
+    - name: Установка зависимостей хоста (Debian/Ubuntu)
+      apt:
+        name:
+          - bash
+          - binutils
+          - bison
+          - build-essential
+          - gawk
+          - gzip
+          - m4
+          - make
+          - patch
+          - perl
+          - python3
+          - texinfo
+          - xz-utils
+          - wget
+          - bzip2
+          - lz4
+          - zstd
+          - file
+          - less
+          - bc
+          - flex
+          - autoconf
+          - automake
+          - libtool
+          - libncurses-dev
+          - libssl-dev
+          - libelf-dev
+          - dosfstools
+          - e2fsprogs
+        state: present
+      when: ansible_os_family == "Debian"
+
+    - name: Установка зависимостей хоста (RHEL/Fedora)
+      dnf:
+        name:
+          - bash
+          - binutils
+          - bison
+          - gcc
+          - gcc-c++
+          - make
+          - patch
+          - perl
+          - python3
+          - texinfo
+          - xz
+          - wget
+          - bzip2
+          - lz4
+          - zstd
+          - file
+          - less
+          - bc
+          - flex
+          - autoconf
+          - automake
+          - libtool
+          - ncurses-devel
+          - openssl-devel
+          - elfutils-libelf-devel
+          - dosfstools
+          - e2fsprogs
+        state: present
+      when: ansible_os_family == "RedHat"
+
+    # -------------------------------------------------------------------------
+    - name: Разметка диска (GPT)
+      shell: |
+        parted -s {{ target_disk }} mklabel gpt
+        parted -s {{ target_disk }} mkpart ESP fat32 1MiB 513MiB
+        parted -s {{ target_disk }} set 1 esp on
+        parted -s {{ target_disk }} mkpart BIOS_BOOT 513MiB 514MiB
+        parted -s {{ target_disk }} set 2 bios_grub on
+        parted -s {{ target_disk }} mkpart BOOT ext2 514MiB 1014MiB
+        parted -s {{ target_disk }} mkpart SWAP linux-swap 1014MiB 3GiB
+        parted -s {{ target_disk }} mkpart LFS ext4 3GiB 100%
+      when: auto_partition | default(false) | bool
+      args:
+        creates: "{{ target_disk }}1"
+
+    # -------------------------------------------------------------------------
+    - name: Создание файловых систем
+      command: "{{ item }}"
+      loop:
+        - "mkfs.vfat -F 32 {{ target_disk }}1"
+        - "mkfs.ext2 {{ target_disk }}3"
+        - "mkswap {{ target_disk }}4"
+        - "mkfs.ext4 {{ target_disk }}5"
+      when: auto_partition | default(false) | bool
+
+    # -------------------------------------------------------------------------
+    - name: Создание точки монтирования
+      file:
+        path: "{{ lfs_root }}"
+        state: directory
+        mode: "0755"
+
+    - name: Монтирование LFS-раздела
+      mount:
+        path: "{{ lfs_root }}"
+        src: "{{ target_disk }}5"
+        fstype: ext4
+        state: mounted
+
+    - name: Монтирование /boot
+      mount:
+        path: "{{ lfs_root }}/boot"
+        src: "{{ target_disk }}3"
+        fstype: ext2
+        state: mounted
+
+    - name: Монтирование /boot/efi
+      mount:
+        path: "{{ lfs_root }}/boot/efi"
+        src: "{{ target_disk }}1"
+        fstype: vfat
+        state: mounted
+
+    - name: Активация swap
+      command: "swapon {{ target_disk }}4"
+
+    # -------------------------------------------------------------------------
+    - name: Создание пользователя lfs
+      user:
+        name: lfs
+        group: lfs
+        shell: /bin/bash
+        create_home: yes
+        home: /home/lfs
+
+    - name: Создание группы lfs
+      group:
+        name: lfs
+        state: present
+
+    # -------------------------------------------------------------------------
+    - name: Копирование скриптов сборки
+      synchronize:
+        src: "{{ playbook_dir }}/../"
+        dest: "{{ lfs_build_dir }}/"
+        rsync_opts:
+          - "--exclude=logs"
+          - "--exclude=state"
+          - "--exclude=output"
+
+    - name: Установка прав на скрипты
+      file:
+        path: "{{ lfs_build_dir }}"
+        state: directory
+        recurse: yes
+        mode: "0755"
+
+    # -------------------------------------------------------------------------
+    - name: Пред-полётная валидация хоста
+      shell: bash {{ lfs_build_dir }}/validate-host.sh
+      register: validate_result
+      changed_when: false
+      failed_when: validate_result.rc != 0
+
+    - name: Вывод результатов валидации
+      debug:
+        msg: "{{ validate_result.stdout_lines }}"
+
+    # -------------------------------------------------------------------------
+    - name: Запуск сборки LFS (long-running)
+      shell: |
+        RUN_TESTS={{ run_tests }} bash {{ lfs_build_dir }}/build-lfs.sh
+      async: 86400  # 24 часа максимум
+      poll: 60
+      register: build_result
+
+    # -------------------------------------------------------------------------
+    - name: Проверка результата сборки
+      assert:
+        that: build_result.rc == 0
+        fail_msg: "Сборка LFS завершилась с ошибкой"
+
+    - name: Уведомление об успехе
+      uri:
+        url: "{{ notify_webhook_url }}"
+        method: POST
+        body_format: json
+        body:
+          text: "🎉 LFS сборка на {{ inventory_hostname }} завершена"
+      when: notify_webhook_url is defined
+
+    # -------------------------------------------------------------------------
+    - name: Вывод информации о системе
+      debug:
+        msg:
+          - "LFS успешно собран на {{ inventory_hostname }}"
+          - "Корень: {{ lfs_root }}"
+          - "Версия: {{ lfs_version }}"
+          - "Не забудьте: passwd root"

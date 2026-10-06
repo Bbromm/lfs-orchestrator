@@ -1,0 +1,42 @@
+FROM python:3.12-slim
+
+LABEL maintainer="LFS Orchestrator"
+LABEL description="DAG-based orchestrator for Linux From Scratch"
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl ca-certificates \
+        docker.io \
+ && rm -f /usr/local/bin/docker \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY pyproject.toml requirements.txt ./
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY src/ ./src/
+COPY config/ ./config/
+RUN pip install --no-cache-dir -e .
+
+RUN mkdir -p /data /logs
+
+# Создаём пользователя lfs с UID/GID 1000 (совпадает с хостом)
+ARG LFS_UID=1000
+ARG LFS_GID=1000
+RUN groupadd -g ${LFS_GID} lfs \
+ && useradd -u ${LFS_UID} -g ${LFS_GID} -m -s /bin/bash lfs \
+ && chown -R lfs:lfs /app /data /logs
+
+EXPOSE 8000
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+    CMD curl -f http://localhost:8000/health || exit 1
+
+CMD ["uvicorn", "lfs_orchestrator.api:app", "--host", "0.0.0.0", "--port", "8000"]
+
+ARG DOCKER_CLI_VERSION=27.3.1
+RUN curl -fsSL "https://download.docker.com/linux/static/stable/x86_64/docker-${DOCKER_CLI_VERSION}.tgz" \
+    | tar -xz -C /tmp \
+ && mv /tmp/docker/docker /usr/local/bin/docker \
+ && chmod +x /usr/local/bin/docker \
+ && rm -rf /tmp/docker

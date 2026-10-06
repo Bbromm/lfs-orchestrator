@@ -1,0 +1,12 @@
+all:
+  children:
+    lfs_builders:
+      hosts:
+        builder1:
+          ansible_host: 192.168.1.100
+          ansible_user: root
+          target_disk: /dev/sda
+        builder2:
+          ansible_host: 192.168.1.101
+          ansible_user: root
+          target_disk: /dev/nvme0n1

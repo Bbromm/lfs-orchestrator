@@ -1,0 +1,31 @@
+# Executing: bash /app/scripts/install-chapter5.sh --only binutils-pass1
+# CWD: /app
+# ENV: {'LFS': '/mnt/lfs', 'LFS_TGT': 'x86_64-lfs-linux-gnu'}
+
+#################################################################
+#  LFS 13.1-systemd — Глава 5: Кросс-инструментарий              #
+#  Начало: Mon Oct  5 15:05:12 UTC 2026                        #
+#################################################################
+
+
+===================================================================
+  Проверка предусловий
+===================================================================
+
+[0;32m[OK][0m Пользователь: lfs
+[0;32m[OK][0m $LFS = /mnt/lfs
+[0;32m[OK][0m $LFS_TGT = x86_64-lfs-linux-gnu
+[0;32m[OK][0m Каталог /mnt/lfs/tools существует
+[0;32m[OK][0m Каталог /mnt/lfs/sources существует
+[0;32m[OK][0m Каталог логов: /mnt/lfs/sources/logs
+Отсутствуют файлы:
+  - binutils-2.47.tar.xz
+  - gcc-16.2.0.tar.xz
+  - gmp-6.3.0.tar.xz
+  - mpfr-4.2.2.tar.xz
+  - mpc-1.4.1.tar.xz
+  - linux-7.1.8.tar.xz
+  - glibc-2.44.tar.xz
+  - glibc-fhs-1.patch
+  - glibc-2.44-upstream_fixes-1.patch
+[0;31m[ERROR][0m Загрузите отсутствующие файлы в /mnt/lfs/sources

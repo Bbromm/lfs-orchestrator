@@ -1,0 +1,32 @@
+# Executing: bash /app/scripts/install-chapter5.sh --only binutils-pass1
+# CWD: /app
+# ENV: {'LFS': '/mnt/lfs', 'LFS_TGT': 'x86_64-lfs-linux-gnu'}
+
+#################################################################
+#  LFS 13.1-systemd — Глава 5: Кросс-инструментарий              #
+#  Начало: Tue Oct  6 07:33:55 UTC 2026                        #
+#################################################################
+
+
+===================================================================
+  Проверка предусловий
+===================================================================
+
+[0;32m[OK][0m Пользователь: lfs
+[0;32m[OK][0m $LFS = /mnt/lfs
+[0;32m[OK][0m $LFS_TGT = x86_64-lfs-linux-gnu
+[0;32m[OK][0m Каталог /mnt/lfs/tools существует
+[0;32m[OK][0m Каталог /mnt/lfs/sources существует
+[0;32m[OK][0m Каталог логов: /mnt/lfs/sources/logs
+[0;32m[OK][0m Все необходимые tarball'ы и патчи найдены
+
+===================================================================
+  5.2 Binutils-2.47 — Pass 1
+===================================================================
+
+[0;34m[07:33:55][0m Извлечение binutils-2.47.tar.xz...
+tar (child): xz: Cannot exec: No such file or directory
+tar (child): Error is not recoverable: exiting now
+tar: Child returned status 2
+tar: Error is not recoverable: exiting now
+[0;31m[ERROR][0m Не удалось извлечь binutils-2.47.tar.xz

@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   orchestrator:
     build:
@@ -10,23 +8,29 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - LFS_ORCH_PORT=8000
-      - LFS_DB_PATH=/data/orchestrator.db
-      - LFS_ROOT=/mnt/lfs
-      - LFS_SOURCES=/mnt/lfs/sources
-      - LFS_LOGS_DIR=/logs
-      - LFS_EXECUTOR=local
-      - LFS_MAX_PARALLEL=4
+      LFS_ORCH_PORT: "8000"
+      LFS_DB_PATH: "/data/orchestrator.db"
+      LFS_ROOT: "/mnt/lfs"
+      LFS_SOURCES: "/mnt/lfs/sources"
+      LFS_LOGS_DIR: "/logs"
+      LFS_EXECUTOR: "docker"
+      LFS_MAX_PARALLEL: "4"
+    user: "1000:1000"
+    group_add:
+      - "126"      # GID группы docker на хосте  
     volumes:
       - ./data:/data
       - ./logs:/logs
-      - ${LFS_ROOT:-/mnt/lfs}:/mnt/lfs
-      - /var/run/docker.sock:/var/run/docker.sock  # для docker exec
+      - ./scripts:/app/scripts
+      - ./config:/app/config
+      - ${LFS_ROOT}:/mnt/lfs
+      - /var/run/docker.sock:/var/run/docker.sock
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
       timeout: 5s
       retries: 3
+      start_period: 10s
 
   prometheus:
     image: prom/prometheus:v2.55.0
@@ -50,9 +54,9 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=admin
-      - GF_USERS_ALLOW_SIGN_UP=false
+      GF_SECURITY_ADMIN_USER: "admin"
+      GF_SECURITY_ADMIN_PASSWORD: "admin"
+      GF_USERS_ALLOW_SIGN_UP: "false"
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro

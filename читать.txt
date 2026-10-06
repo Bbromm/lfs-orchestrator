@@ -1,0 +1,23 @@
+Создать структуру главы 4.2
+sudo bash -c '
+set -e
+LFS=/mnt/lfs
+OWN=1000:1000
+
+mkdir -pv $LFS/{etc,var} $LFS/usr/{bin,lib,sbin}
+mkdir -pv $LFS/tools
+
+[ -L "$LFS/lib64" ] && rm -fv "$LFS/lib64"
+mkdir -pv "$LFS/lib64"
+
+for i in bin lib sbin; do
+  [ -L "$LFS/$i" ] && continue
+  [ -d "$LFS/$i" ] && [ ! -e "$LFS/usr/$i" ] && mv "$LFS/$i" "$LFS/usr/$i"
+  ln -sfv "usr/$i" "$LFS/$i"
+done
+
+chown -R $OWN $LFS/etc $LFS/var $LFS/usr $LFS/lib64 $LFS/tools $LFS/sources
+chmod a+wt $LFS/sources
+
+ls -ldn $LFS/{etc,var,bin,lib,sbin,lib64,tools,sources} $LFS/usr/{bin,lib,sbin}
+'

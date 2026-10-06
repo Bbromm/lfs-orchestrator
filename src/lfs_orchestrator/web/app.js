@@ -23,7 +23,7 @@ async function startBuild() {
         method: "POST",
         body: JSON.stringify({
             phases: phases.split(",").map(s => s.trim()),
-            config_path: "config/lfs-default.yaml",
+            config_path: "/app/config/test.yaml",
         }),
     });
     currentBuild = resp.build_id;
@@ -139,6 +139,24 @@ $("pause-btn").onclick = pauseBuild;
 $("resume-btn").onclick = resumeBuild;
 
 // При загрузке — если есть последняя сборка в localStorage
+async function attachToLatest() {
+    try {
+        const builds = await api("/api/builds");
+        if (!Array.isArray(builds) || builds.length === 0) return;
+        // последняя по created_at
+        const last = builds[builds.length - 1];
+        if (!last || !last.build_id) return;
+        currentBuild = last.build_id;
+        $("build-id").textContent = currentBuild;
+        switchButtons(last.status === "running");
+        refresh();
+        connectWS();
+        pollLoop();
+    } catch (e) {
+        console.error("attachToLatest:", e);
+    }
+}
+
 const lastBuild = localStorage.getItem("last_build");
 if (lastBuild) {
     currentBuild = lastBuild;
@@ -146,4 +164,6 @@ if (lastBuild) {
     refresh();
     connectWS();
     pollLoop();
+} else {
+    attachToLatest();
 }

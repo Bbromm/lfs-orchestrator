@@ -1,0 +1,1 @@
+# DOCKER: docker run --rm --privileged -v /mnt/lfs:/mnt/lfs -v /root/lfs-build:/root/lfs-build -e LFS=/mnt/lfs -e LFS_TGT=x86_64-lfs-linux-gnu lfs-builder:latest bash /root/lfs-build/scripts/install-chapter5.sh --only binutils-pass1

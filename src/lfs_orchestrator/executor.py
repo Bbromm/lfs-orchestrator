@@ -135,11 +135,13 @@ class DockerExecutor(Executor):
 
         cmd = [
             "docker", "run", "--rm", "--privileged",
+            "--user", "lfs",
             "-v", "/mnt/lfs:/mnt/lfs",
-            "-v", "/root/lfs-build:/root/lfs-build",
+            "-v", "/root/lfs-build:/lfs-build",
+            "-w", "/lfs-build",
             *env_args,
             self.image,
-            "bash", f"/root/lfs-build/{task.script}", *task.args,
+            "bash", f"/lfs-build/{task.script}", *task.args,
         ]
 
         with log_file.open("wb") as log:

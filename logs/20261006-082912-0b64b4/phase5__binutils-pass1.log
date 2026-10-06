@@ -1,0 +1,2 @@
+# DOCKER: docker run --rm --privileged --user lfs -v /mnt/lfs:/mnt/lfs -v /root/lfs-build:/root/lfs-build -w /root/lfs-build -e LFS=/mnt/lfs -e LFS_TGT=x86_64-lfs-linux-gnu lfs-builder:latest bash /root/lfs-build/scripts/install-chapter5.sh --only binutils-pass1
+docker: Error response from daemon: OCI runtime create failed: container_linux.go:377: starting container process caused: chdir to cwd ("/root/lfs-build") set in config.json failed: permission denied: unknown.
