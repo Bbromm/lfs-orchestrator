@@ -141,9 +141,12 @@ integrate() {
     fi
 
     # fontconfig в базовом LFS отсутствует, поэтому даём ему готовый конфиг
-    # с каталогом шрифтов из профиля Nix.
+    # с каталогом шрифтов из профиля Nix. Кешей два: системный (пишется от
+    # root, поэтому 1777 — иначе пользователь получает «No writable cache
+    # directories») и пользовательский через XDG.
     mkdir -p /etc/fonts /var/cache/fontconfig
-    if [[ ! -f /etc/fonts/fonts.conf ]]; then
+    chmod 1777 /var/cache/fontconfig
+    if [[ ! -f /etc/fonts/fonts.conf ]] || ! grep -q 'prefix="xdg"' /etc/fonts/fonts.conf; then
         cat > /etc/fonts/fonts.conf <<'EOF'
 <?xml version="1.0"?>
 <!DOCTYPE fontconfig SYSTEM "fonts.dtd">
@@ -151,11 +154,12 @@ integrate() {
   <dir>/usr/share/fonts</dir>
   <dir>/nix/var/nix/profiles/default/share/fonts</dir>
   <cachedir>/var/cache/fontconfig</cachedir>
+  <cachedir prefix="xdg">fontconfig</cachedir>
 </fontconfig>
 EOF
-        ok "/etc/fonts/fonts.conf создан"
+        ok "/etc/fonts/fonts.conf записан"
     else
-        ok "/etc/fonts/fonts.conf уже есть"
+        ok "/etc/fonts/fonts.conf уже настроен"
     fi
 
     # Xorg должен уметь переключать виртуальные консоли — без setuid он этого

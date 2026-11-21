@@ -304,6 +304,25 @@ fi
 EOF
         ok "профиль Nix подключён к /etc/profile"
     fi
+
+    # Nix здесь однопользовательский (установлен под root), поэтому писать в
+    # /nix может только root и любая работа с nix идёт через sudo. В штатном
+    # /etc/sudoers есть Defaults secure_path без /nix, из-за чего «sudo nix»
+    # падает с «nix: command not found». Drop-in добавляет каталог в PATH.
+    mkdir -p /etc/sudoers.d
+    cat > /etc/sudoers.d/30-nix <<'EOF'
+# Nix установлен в single-user режиме под root, поэтому все операции с ним
+# идут через sudo. Без этого каталога в secure_path sudo не находит nix
+# и печатает "nix: command not found".
+Defaults secure_path="/nix/var/nix/profiles/default/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+EOF
+    chmod 440 /etc/sudoers.d/30-nix
+    if command -v visudo >/dev/null 2>&1 && ! visudo -cf /etc/sudoers.d/30-nix >/dev/null 2>&1; then
+        rm -f /etc/sudoers.d/30-nix
+        warn "/etc/sudoers.d/30-nix не прошёл проверку — удалён"
+    else
+        ok "sudo видит nix (secure_path)"
+    fi
 }
 
 install_nix() {
