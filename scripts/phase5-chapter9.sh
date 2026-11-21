@@ -1,23 +1,24 @@
 #!/bin/bash
 ###############################################################################
-# phase5-chapter9.sh — Глава 9: Конфигурация системы
-# ЗАПУСКАЕТСЯ ВНУТРИ CHROOT от root
+# configure-system.sh — LFS 13.1-systemd, Глава 9: Конфигурация системы
+# ЗАПУСКАЕТСЯ ВНУТРИ CHROOT от root (сразу после главы 8).
 #
-# Все параметры передаются через переменные окружения из build-lfs.sh:
+# Использование:
+#   bash /configure-system.sh
+#
+# Параметры — через переменные окружения:
 #   HOSTNAME, TIMEZONE, LOCALE, KEYMAP, CONSOLE_FONT,
-#   USE_DHCP, STATIC_IP, GATEWAY, DNS_PRIMARY, DNS_SECONDARY, LFS_VERSION
-#
-# Использование (вручную):
-#   chroot $LFS /bin/bash -c "bash /configure-system.sh"
+#   USE_DHCP, STATIC_IP, GATEWAY, DNS_PRIMARY, DNS_SECONDARY,
+#   LFS_VERSION, NET_IFACE
 ###############################################################################
 set -euo pipefail
 
 #------------------------------------------------------------------------------
-# Параметры (со значениями по умолчанию)
+# Параметры (значения по умолчанию — под вашу систему)
 #------------------------------------------------------------------------------
-HOSTNAME="${HOSTNAME:-lfs}"
-TIMEZONE="${TIMEZONE:-Europe/Moscow}"
-LOCALE="${LOCALE:-ru_RU.UTF-8}"
+HOSTNAME="${HOSTNAME:-mylfs}"
+TIMEZONE="${TIMEZONE:-Asia/Yekaterinburg}"
+LOCALE="${LOCALE:-en_US.UTF-8}"
 KEYMAP="${KEYMAP:-ru}"
 CONSOLE_FONT="${CONSOLE_FONT:-Lat2-Terminus16}"
 USE_DHCP="${USE_DHCP:-yes}"
@@ -26,9 +27,8 @@ GATEWAY="${GATEWAY:-192.168.1.1}"
 DNS_PRIMARY="${DNS_PRIMARY:-8.8.8.8}"
 DNS_SECONDARY="${DNS_SECONDARY:-8.8.4.4}"
 LFS_VERSION="${LFS_VERSION:-13.1-systemd}"
-
-# Автоопределение интерфейса (можно переопределить через NET_IFACE)
 NET_IFACE="${NET_IFACE:-}"
+PREFIX="${PREFIX:-24}"
 
 #------------------------------------------------------------------------------
 # Вспомогательные функции
@@ -44,39 +44,55 @@ section() { echo; echo -e "${MAGENTA}──────────────�
             echo -e "${MAGENTA}  $*${NC}";
             echo -e "${MAGENTA}────────────────────────────────────────────────────────────${NC}"; }
 
-#------------------------------------------------------------------------------
-# Проверка контекста
+# Идемпотентные помощники
+safe_ln() { ln -sfv -- "$@"; }
+
 #------------------------------------------------------------------------------
 check_prereq() {
     [[ "$(id -u)" == "0" ]] || die "Скрипт должен запускаться от root внутри chroot"
-    [[ -f /etc/passwd ]]     || die "Не в chroot — нет /etc/passwd"
-    [[ -f /etc/lfs-release ]] && \
-        ok "Система LFS $(cat /etc/lfs-release)" || \
-        warn "/etc/lfs-release отсутствует (создадим в Главе 11)"
+    [[ -f /etc/passwd      ]] || die "Не в chroot — нет /etc/passwd"
+    [[ -d /usr/lib/systemd ]] || die "systemd не установлен — проверьте главу 8"
+    if [[ -f /etc/lfs-release ]]; then
+        ok "Система LFS $(cat /etc/lfs-release)"
+    else
+        warn "/etc/lfs-release отсутствует (обычно создаётся в Главе 11)"
+    fi
 }
 
 #------------------------------------------------------------------------------
-# 9.2.1 Network Interface Configuration Files
+# 9.2.1 Network Interface Configuration
 #------------------------------------------------------------------------------
 configure_network() {
     section "9.2.1 Настройка сети (systemd-networkd)"
 
     mkdir -pv /etc/systemd/network
 
-    # Определяем имя интерфейса
+    # ФИКС #4: безопасное автоопределение интерфейса
     if [[ -z "$NET_IFACE" ]]; then
-        # Пробуем найти в /sys/class/net, исключая lo
-        for iface in /sys/class/net/*; do
-            name=$(basename "$iface")
-            [[ "$name" == "lo" ]] && continue
-            NET_IFACE="$name"
-            break
-        done
-        # Если не нашли — используем enp0s3 как типичный для VirtualBox
-        NET_IFACE="${NET_IFACE:-enp0s3}"
-        warn "Автоопределение интерфейса: $NET_IFACE (переопределите через NET_IFACE)"
+        local found=""
+        if [[ -d /sys/class/net ]]; then
+            shopt -s nullglob
+            for iface in /sys/class/net/*; do
+                local name
+                name="$(basename "$iface")"
+                [[ "$name" == "lo" ]] && continue
+                found="$name"
+                break
+            done
+            shopt -u nullglob
+        fi
+        NET_IFACE="${found:-enp0s3}"
+        if [[ -n "$found" ]]; then
+            log "Автоопределение интерфейса: $NET_IFACE"
+        else
+            warn "Интерфейс не найден в /sys/class/net — использую enp0s3"
+            warn "Переопределите: NET_IFACE=eth0 bash $0"
+        fi
     fi
     ok "Сетевой интерфейс: $NET_IFACE"
+
+    # Чистим возможные старые конфиги с другим именем интерфейса
+    rm -fv /etc/systemd/network/10-eth-*.network 2>/dev/null || true
 
     if [[ "$USE_DHCP" == "yes" ]]; then
         log "Настройка DHCP для $NET_IFACE"
@@ -98,7 +114,7 @@ EOF
 Name=$NET_IFACE
 
 [Network]
-Address=$STATIC_IP/24
+Address=$STATIC_IP/$PREFIX
 Gateway=$GATEWAY
 DNS=$DNS_PRIMARY
 DNS=$DNS_SECONDARY
@@ -114,9 +130,16 @@ EOF
 configure_resolv_conf() {
     section "9.2.2 Создание /etc/resolv.conf"
 
-    # При использовании systemd-resolved файл создаётся автоматически,
-    # но для chroot и совместимости создаём статический
-    if [[ "$USE_DHCP" == "no" ]]; then
+    if [[ "$USE_DHCP" == "yes" ]]; then
+        # ФИКС #2: при DHCP используем systemd-resolved как источник DNS.
+        # stub-resolv.conf будет создан самим resolved при первой загрузке.
+        log "DHCP: /etc/resolv.conf → /run/systemd/resolve/stub-resolv.conf"
+        log "(systemd-resolved будет включён ниже, в configure_systemd)"
+        # Убираем возможный обычный файл перед симлинком
+        [[ -f /etc/resolv.conf && ! -L /etc/resolv.conf ]] && rm -fv /etc/resolv.conf
+        safe_ln /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
+        ok "/etc/resolv.conf → stub-resolv.conf"
+    else
         cat > /etc/resolv.conf << EOF
 # Begin /etc/resolv.conf
 
@@ -127,13 +150,6 @@ nameserver $DNS_SECONDARY
 # End /etc/resolv.conf
 EOF
         ok "/etc/resolv.conf создан (статический)"
-    else
-        # При DHCP создаём заглушку — systemd-resolved заменит на boot
-        log "DHCP: /etc/resolv.conf будет управляться systemd-resolved"
-        if [[ ! -L /etc/resolv.conf ]]; then
-            ln -sfv /run/systemd/resolve/stub-resolv.conf /etc/resolv.conf
-            ok "Создана ссылка на stub-resolv.conf"
-        fi
     fi
 }
 
@@ -142,7 +158,6 @@ EOF
 #------------------------------------------------------------------------------
 configure_hostname() {
     section "9.2.3 Настройка hostname"
-
     echo "$HOSTNAME" > /etc/hostname
     ok "/etc/hostname: $HOSTNAME"
 }
@@ -152,7 +167,6 @@ configure_hostname() {
 #------------------------------------------------------------------------------
 configure_hosts() {
     section "9.2.4 Настройка /etc/hosts"
-
     cat > /etc/hosts << EOF
 # Begin /etc/hosts
 
@@ -168,37 +182,29 @@ EOF
 }
 
 #------------------------------------------------------------------------------
-# 9.3 Overview of Device and Module Handling
+# 9.3 Проверка systemd-udevd
 #------------------------------------------------------------------------------
-# Чисто информационный раздел — никаких действий не требуется.
-# Но проверим, что systemd-udevd на месте.
 check_udev() {
     section "9.3 Проверка systemd-udevd"
-
     if [[ -x /usr/lib/systemd/systemd-udevd ]]; then
         ok "systemd-udevd найден"
     else
         die "systemd-udevd отсутствует — проверьте установку systemd"
     fi
-
-    # Проверка базовых udev-правил
     [[ -f /usr/lib/udev/rules.d/50-udev-default.rules ]] && \
         ok "udev default rules на месте" || \
         warn "udev default rules отсутствуют"
 }
 
 #------------------------------------------------------------------------------
-# 9.4 Managing Devices — опциональные правила
+# 9.4 Правила udev (шаблон)
 #------------------------------------------------------------------------------
 configure_udev_rules() {
     section "9.4 Управление устройствами (опционально)"
-
-    # Если пользователь хочет persistent symlinks для камер/тюнеров —
-    # создаём шаблонный файл, который можно отредактировать позже.
     if [[ ! -f /etc/udev/rules.d/83-duplicate_devs.rules ]]; then
         cat > /etc/udev/rules.d/83-duplicate_devs.rules << 'EOF'
 # Persistent symlinks for webcam and tuner
-# Отредактируйте под свои устройства (используйте `udevadm info -a -p /sys/class/...`)
+# Отредактируйте под свои устройства (udevadm info -a -p /sys/class/...)
 # KERNEL=="video*", ATTRS{idProduct}=="1910", ATTRS{idVendor}=="0d81", SYMLINK+="webcam"
 # KERNEL=="video*", ATTRS{device}=="0x036f", ATTRS{vendor}=="0x109e", SYMLINK+="tvtuner"
 EOF
@@ -209,73 +215,44 @@ EOF
 }
 
 #------------------------------------------------------------------------------
-# 9.5 System Clock — /etc/adjtime
+# 9.5 Системные часы
 #------------------------------------------------------------------------------
 configure_clock() {
     section "9.5 Настройка системных часов"
 
-    # Определяем, использует ли хост local time или UTC.
-    # По умолчанию — UTC (рекомендуется).
-    local RTC_MODE="UTC"
-    if command -v hwclock >/dev/null 2>&1; then
-        if hwclock --localtime --show >/dev/null 2>&1; then
-            local hw_time=$(hwclock --localtime --show 2>/dev/null | head -1 || true)
-            local sys_time=$(date '+%Y-%m-%d %H:%M:%S')
-            # Грубая проверка: если разница < 5 минут — local
-            if [[ -n "$hw_time" ]]; then
-                local hw_epoch=$(date -d "$hw_time" +%s 2>/dev/null || echo 0)
-                local sys_epoch=$(date +%s)
-                local diff=$(( hw_epoch > sys_epoch ? hw_epoch - sys_epoch : sys_epoch - hw_epoch ))
-                (( diff < 300 )) && RTC_MODE="LOCAL"
-            fi
-        fi
-    fi
-
-    if [[ "$RTC_MODE" == "LOCAL" ]]; then
-        log "Аппаратные часы установлены в LOCAL time"
-        cat > /etc/adjtime << 'EOF'
-0.0 0 0.0
-0
-LOCAL
-EOF
-    else
-        log "Аппаратные часы установлены в UTC (рекомендуется)"
-        # Файл /etc/adjtime создаст systemd-timedated при первом boot.
-        # Для явности — создаём UTC по умолчанию:
+    # В chroot hwclock не работает (нет доступа к RTC), поэтому
+    # просто фиксируем UTC — рекомендованный LFS-режим.
+    if [[ ! -f /etc/adjtime ]]; then
         cat > /etc/adjtime << 'EOF'
 0.0 0 0.0
 0
 UTC
 EOF
+        ok "/etc/adjtime создан (UTC)"
+    else
+        ok "/etc/adjtime уже существует"
     fi
 
-    # Настройка часового пояса через /etc/localtime
+    # Часовой пояс
     if [[ -f "/usr/share/zoneinfo/$TIMEZONE" ]]; then
-        ln -sfv "/usr/share/zoneinfo/$TIMEZONE" /etc/localtime
+        safe_ln "/usr/share/zoneinfo/$TIMEZONE" /etc/localtime
         ok "Часовой пояс: $TIMEZONE"
     else
         warn "Часовой пояс '$TIMEZONE' не найден в /usr/share/zoneinfo"
-        warn "Доступные варианты: посмотрите /usr/share/zoneinfo/"
-        # Fallback
+        warn "Первые доступные зоны:"
+        find /usr/share/zoneinfo -maxdepth 1 -type d 2>/dev/null | head -10 | sed 's/^/    /'
         if [[ -f /usr/share/zoneinfo/UTC ]]; then
-            ln -sfv /usr/share/zoneinfo/UTC /etc/localtime
+            safe_ln /usr/share/zoneinfo/UTC /etc/localtime
             warn "Использован UTC как fallback"
         fi
-    fi
-
-    # Попытка timedatectl (может не работать в chroot — не критично)
-    if command -v timedatectl >/dev/null 2>&1; then
-        timedatectl set-timezone "$TIMEZONE" 2>/dev/null || \
-            warn "timedatectl недоступен в chroot (нормально — применится при boot)"
     fi
 }
 
 #------------------------------------------------------------------------------
-# 9.6 Linux Console — /etc/vconsole.conf
+# 9.6 Linux Console
 #------------------------------------------------------------------------------
 configure_console() {
     section "9.6 Настройка консоли Linux"
-
     cat > /etc/vconsole.conf << EOF
 # Begin /etc/vconsole.conf
 KEYMAP=$KEYMAP
@@ -284,59 +261,66 @@ FONT=$CONSOLE_FONT
 EOF
     ok "/etc/vconsole.conf создан (KEYMAP=$KEYMAP, FONT=$CONSOLE_FONT)"
 
-    # Проверка наличия шрифта
-    if [[ ! -f "/usr/share/consolefonts/${CONSOLE_FONT}.psfu.gz" && \
-          ! -f "/usr/share/consolefonts/${CONSOLE_FONT}.psf.gz" && \
-          ! -f "/usr/share/consolefonts/${CONSOLE_FONT}" ]]; then
-        warn "Шрифт консоли '$CONSOLE_FONT' не найден в /usr/share/consolefonts"
-        warn "Доступные шрифты (первые 10):"
-        ls /usr/share/consolefonts/ 2>/dev/null | head -10 | sed 's/^/    /'
-    else
-        ok "Шрифт консоли найден"
+    # Проверка шрифта
+    local f
+    for f in "/usr/share/consolefonts/${CONSOLE_FONT}.psfu.gz" \
+             "/usr/share/consolefonts/${CONSOLE_FONT}.psf.gz" \
+             "/usr/share/consolefonts/${CONSOLE_FONT}"; do
+        [[ -f "$f" ]] && { ok "Шрифт консоли найден: $f"; return; }
+    done
+    warn "Шрифт консоли '$CONSOLE_FONT' не найден в /usr/share/consolefonts"
+    warn "Доступные шрифты (первые 10):"
+    ls /usr/share/consolefonts/ 2>/dev/null | head -10 | sed 's/^/    /' || true
+
+    # Проверка keymap
+    if [[ ! -f "/usr/share/kbd/keymaps/i386/qwerty/${KEYMAP}.map.gz" ]] && \
+       [[ ! -f "/usr/share/kbd/keymaps/i386/qwertz/${KEYMAP}.map.gz" ]] && \
+       ! find /usr/share/kbd/keymaps -name "${KEYMAP}.map.gz" 2>/dev/null | grep -q .; then
+        warn "Раскладка '$KEYMAP' не найдена в /usr/share/kbd/keymaps"
     fi
 }
 
 #------------------------------------------------------------------------------
-# 9.7 System Locale — /etc/locale.conf, /etc/profile
+# 9.7 System Locale
 #------------------------------------------------------------------------------
 configure_locale() {
     section "9.7 Настройка локали системы"
 
-    # /etc/locale.conf
     cat > /etc/locale.conf << EOF
 LANG=$LOCALE
 EOF
     ok "/etc/locale.conf создан (LANG=$LOCALE)"
 
-    # Проверка, что локаль установлена
+    # Проверка наличия локали
     if LC_ALL="$LOCALE" locale charmap >/dev/null 2>&1; then
         ok "Локаль '$LOCALE' доступна"
     else
         warn "Локаль '$LOCALE' не установлена"
-        warn "Установите её: localedef -i ${LOCALE%.*} -f ${LOCALE##*.} $LOCALE"
-        warn "Доступные локали: locale -a | head"
+        warn "Сгенерируйте её в главе 8 (glibc): localedef -i ${LOCALE%.*} -f ${LOCALE##*.} $LOCALE"
+        warn "Доступные локали:"
+        locale -a 2>/dev/null | head -20 | sed 's/^/    /' || true
     fi
 
-    # /etc/profile с обработкой локали для Linux console
+    # /etc/profile
     cat > /etc/profile << 'EOF'
 # Begin /etc/profile
 
-# Если работаем в Linux console — используем C.UTF-8 (нет глифов для многого)
-# Иначе — читаем /etc/locale.conf
+# Очищаем унаследованные LC_*/LANG
 for i in $(locale); do
     unset ${i%=*}
 done
 
 if [[ "$TERM" = linux ]]; then
+    # Linux console: не все локали имеют глифы
     export LANG=C.UTF-8
 else
-    if [ -f /etc/locale.conf ]; then
+    if [[ -f /etc/locale.conf ]]; then
         source /etc/locale.conf
     fi
     for i in $(locale); do
-        key=${i%=*}
-        if [[ -v $key ]]; then
-            export $key
+        key="${i%=*}"
+        if [[ -v "$key" ]]; then
+            export "$key"
         fi
     done
 fi
@@ -351,33 +335,19 @@ EOF
 #------------------------------------------------------------------------------
 configure_inputrc() {
     section "9.8 Создание /etc/inputrc"
-
     cat > /etc/inputrc << 'EOF'
 # Begin /etc/inputrc
-# Modified by Chris Lynn <roryo@roryo.dynup.net>
-
-# Allow the command prompt to wrap to the next line
 set horizontal-scroll-mode Off
-
-# Enable 8-bit input
 set meta-flag On
 set input-meta On
-
-# Turns off 8th bit stripping
 set convert-meta Off
-
-# Keep the 8th bit for display
 set output-meta On
-
-# none, visible or audible
 set bell-style none
 
-# All of the following map the escape sequence of the value
-# contained in the 1st argument to the readline specific functions
 "\eOd": backward-word
 "\eOc": forward-word
 
-# for linux console
+# linux console
 "\e[1~": beginning-of-line
 "\e[4~": end-of-line
 "\e[5~": beginning-of-history
@@ -385,18 +355,13 @@ set bell-style none
 "\e[3~": delete-char
 "\e[2~": quoted-insert
 
-# for xterm
+# xterm
 "\eOH": beginning-of-line
 "\eOF": end-of-line
 
-# for Konsole
+# Konsole
 "\e[H": beginning-of-line
 "\e[F": end-of-line
-
-# uncomment for history search mode with up/down
-# "\e[A": history-search-backward
-# "\e[B": history-search-forward
-
 # End /etc/inputrc
 EOF
     ok "/etc/inputrc создан"
@@ -407,7 +372,6 @@ EOF
 #------------------------------------------------------------------------------
 configure_shells() {
     section "9.9 Создание /etc/shells"
-
     cat > /etc/shells << 'EOF'
 # Begin /etc/shells
 
@@ -425,7 +389,7 @@ EOF
 configure_systemd() {
     section "9.10 Настройка systemd"
 
-    # --- 9.10.2 Отключение очистки экрана при загрузке (опционально) ---
+    # 9.10.2 — отключить очистку экрана на tty1
     mkdir -pv /etc/systemd/system/getty@tty1.service.d
     cat > /etc/systemd/system/getty@tty1.service.d/noclear.conf << 'EOF'
 [Service]
@@ -433,29 +397,7 @@ TTYVTDisallocate=no
 EOF
     ok "Отключена очистка экрана при загрузке (getty@tty1)"
 
-    # --- 9.10.3 /tmp как tmpfs ---
-    # По умолчанию systemd монтирует /tmp как tmpfs.
-    # Раскомментируйте, если хотите отключить:
-    # systemctl mask tmp.mount
-    log "По умолчанию /tmp монтируется как tmpfs (см. 9.10.3 для отключения)"
-    ok "/tmp: используется tmpfs (по умолчанию systemd)"
-
-    # --- 9.10.4 Автосоздание/удаление файлов (tmpfiles.d) ---
-    if [[ -d /usr/lib/tmpfiles.d ]]; then
-        ok "tmpfiles.d на месте"
-    else
-        warn "/usr/lib/tmpfiles.d отсутствует"
-    fi
-
-    # --- 9.10.5 Override поведения служб — пример (закомментирован) ---
-    # mkdir -pv /etc/systemd/system/foobar.service.d
-    # cat > /etc/systemd/system/foobar.service.d/foobar.conf << EOF
-    # [Service]
-    # Restart=always
-    # RestartSec=30
-    # EOF
-
-    # --- 9.10.8 Ограничение core dumps (опционально, но полезно) ---
+    # 9.10.8 — ограничение core dumps
     mkdir -pv /etc/systemd/coredump.conf.d
     cat > /etc/systemd/coredump.conf.d/maxuse.conf << 'EOF'
 [Coredump]
@@ -463,22 +405,33 @@ MaxUse=5G
 EOF
     ok "Ограничение core dumps: 5G"
 
-    # --- 9.10.9 Long Running Processes ---
-    # По умолчанию systemd убивает все процессы при выходе из сессии.
-    # Для удобства можно разрешить lingering.
-    # Оставлено на усмотрение пользователя — не меняем.
+    # /tmp на tmpfs — по умолчанию у systemd
+    log "По умолчанию /tmp монтируется как tmpfs (см. 9.10.3 для отключения)"
 
-    # --- Применение systemd пресетов (активация служб по умолчанию) ---
+    # tmpfiles.d
+    [[ -d /usr/lib/tmpfiles.d ]] && ok "tmpfiles.d на месте" || warn "/usr/lib/tmpfiles.d отсутствует"
+
+    # ФИКС #1 и #2: явно включаем сетевые службы ДО preset-all
     if command -v systemctl >/dev/null 2>&1; then
-        systemctl preset-all 2>/dev/null || \
-            warn "systemctl preset-all не сработал в chroot (применится при boot)"
+        log "Включение systemd-networkd..."
+        systemctl enable systemd-networkd 2>/dev/null || warn "systemd-networkd enable не сработал"
+
+        if [[ "$USE_DHCP" == "yes" ]]; then
+            log "Включение systemd-resolved (для DNS по DHCP)..."
+            systemctl enable systemd-resolved 2>/dev/null || warn "systemd-resolved enable не сработал"
+        fi
+
+        log "Применение systemd preset-all..."
+        systemctl preset-all 2>/dev/null || warn "systemctl preset-all не сработал в chroot (нормально)"
+    else
+        warn "systemctl не найден — пропускаю включение служб"
     fi
 
     ok "Базовая конфигурация systemd завершена"
 }
 
 #------------------------------------------------------------------------------
-# Дополнительно: /etc/ld.so.conf (обычно создаётся в Главе 8.5, но проверим)
+# Вспомогательные проверки-заглушки
 #------------------------------------------------------------------------------
 ensure_ld_so_conf() {
     if [[ ! -f /etc/ld.so.conf ]]; then
@@ -487,8 +440,6 @@ ensure_ld_so_conf() {
 # Begin /etc/ld.so.conf
 /usr/local/lib
 /opt/lib
-
-# Add an include directory
 include /etc/ld.so.conf.d/*.conf
 # End /etc/ld.so.conf
 EOF
@@ -499,27 +450,20 @@ EOF
     fi
 }
 
-#------------------------------------------------------------------------------
-# Дополнительно: /etc/nsswitch.conf (проверка)
-#------------------------------------------------------------------------------
 ensure_nsswitch() {
     if [[ ! -f /etc/nsswitch.conf ]]; then
         warn "/etc/nsswitch.conf отсутствует — создаём"
         cat > /etc/nsswitch.conf << 'EOF'
 # Begin /etc/nsswitch.conf
-
 passwd: files systemd
 group: files systemd
 shadow: files systemd
-
 hosts: mymachines resolve [!UNAVAIL=return] files myhostname dns
 networks: files
-
 protocols: files
 services: files
 ethers: files
 rpc: files
-
 # End /etc/nsswitch.conf
 EOF
         ok "/etc/nsswitch.conf создан"
@@ -528,9 +472,6 @@ EOF
     fi
 }
 
-#------------------------------------------------------------------------------
-# Дополнительно: /etc/os-release (для systemd)
-#------------------------------------------------------------------------------
 ensure_os_release() {
     if [[ ! -f /etc/os-release ]] || ! grep -q "^NAME=" /etc/os-release 2>/dev/null; then
         cat > /etc/os-release << EOF
@@ -570,9 +511,10 @@ final_check() {
         "/etc/ld.so.conf"
     )
 
-    local missing=0
+    local missing=0 f
     for f in "${files[@]}"; do
-        if [[ -e "$f" ]]; then
+        # ФИКС #3: -L || -e — учитываем и висячие симлинки
+        if [[ -L "$f" || -e "$f" ]]; then
             printf "  ${GREEN}✔${NC} %s\n" "$f"
         else
             printf "  ${RED}✘${NC} %s (отсутствует)\n" "$f"
@@ -582,9 +524,25 @@ final_check() {
 
     # Сетевые конфиги
     if compgen -G "/etc/systemd/network/*.network" >/dev/null; then
-        ok "Сетевые конфиги в /etc/systemd/network/"
+        ok "Сетевые конфиги: $(find /etc/systemd/network -maxdepth 1 -name '*.network' -printf '%f ' 2>/dev/null)"
     else
         warn "/etc/systemd/network/*.network отсутствуют"
+    fi
+
+    # Службы systemd
+    if [[ -L /etc/systemd/system/multi-user.target.wants/systemd-networkd.service ]]; then
+        ok "systemd-networkd включён (автозапуск)"
+    else
+        warn "systemd-networkd НЕ включён — сеть не поднимется после boot"
+    fi
+
+    if [[ "$USE_DHCP" == "yes" ]]; then
+        if [[ -L /etc/systemd/system/multi-user.target.wants/systemd-resolved.service ]] \
+           || [[ -L /etc/systemd/system/dbus-org.freedesktop.resolve1.service ]]; then
+            ok "systemd-resolved включён"
+        else
+            warn "systemd-resolved НЕ включён — DNS по DHCP не заработает"
+        fi
     fi
 
     if (( missing > 0 )); then
@@ -593,7 +551,6 @@ final_check() {
         ok "Все конфигурационные файлы на месте"
     fi
 
-    # Сводка параметров
     echo
     log "Параметры системы:"
     echo "    Hostname:     $HOSTNAME"
@@ -601,7 +558,7 @@ final_check() {
     echo "    Locale:       $LOCALE"
     echo "    Keymap:       $KEYMAP"
     echo "    Console font: $CONSOLE_FONT"
-    echo "    Network:      $( [[ "$USE_DHCP" == "yes" ]] && echo "DHCP" || echo "Static ($STATIC_IP)" )"
+    echo "    Network:      $( [[ "$USE_DHCP" == "yes" ]] && echo "DHCP ($NET_IFACE)" || echo "Static $STATIC_IP ($NET_IFACE)" )"
     echo
 }
 
@@ -631,7 +588,6 @@ main() {
     configure_shells
     configure_systemd
 
-    # Дополнительные проверки/создания
     ensure_ld_so_conf
     ensure_nsswitch
     ensure_os_release

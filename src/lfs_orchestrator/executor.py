@@ -51,16 +51,104 @@ class LocalExecutor(Executor):
                 return 124  # conventional timeout exit code
 
 
+class RootExecutor(Executor):
+    """Запускает задачу от root через sudo без пароля.
+
+    Нужен для фазы A главы 7: она делает chown, bind-mount /dev, /proc, /sys
+    и входит в chroot, запуская там фазу B. Из-под обычного пользователя
+    это невозможно.
+    """
+
+    def __init__(self, cwd: Path, env: dict[str, str] | None = None):
+        self.cwd = cwd
+        self.base_env = env or {}
+
+    async def run(self, task: Task, log_file: Path) -> int:
+        env = {**self.base_env, **task.env}
+        cmd = ["sudo", "-n", "env", *[f"{k}={v}" for k, v in env.items()],
+               "bash", str(self.cwd / task.script), *task.args]
+
+        with log_file.open("wb") as log:
+            log.write(f"# ROOT: {' '.join(shlex.quote(c) for c in cmd)}\n".encode())
+            log.flush()
+
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                cwd=str(self.cwd),
+                stdout=log,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            try:
+                return await asyncio.wait_for(proc.wait(), timeout=task.timeout)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                log.write(f"\n# TIMEOUT after {task.timeout}s\n".encode())
+                return 124
+
+
+class UnprivilegedExecutor(Executor):
+    """Запускает задачу от непривилегированного пользователя с чистым окружением.
+
+    Нужен для глав 2–6: они собираются на хосте от пользователя `lfs`
+    с переменными из книги LFS (4.4). Окружение задаётся явно, профили
+    не читаются — иначе .bash_profile с `exec env -i` съедает команду.
+    """
+
+    def __init__(self, user: str, cwd: Path, env: dict[str, str]):
+        self.user = user
+        self.cwd = cwd
+        self.base_env = env
+
+    async def run(self, task: Task, log_file: Path) -> int:
+        env = {**self.base_env, **task.env}
+        script = str(self.cwd / task.script)
+        inner = "set +h; umask 022; cd " + shlex.quote(str(self.cwd)) \
+            + " && bash " + shlex.quote(script) \
+            + " " + " ".join(shlex.quote(a) for a in task.args)
+
+        env_args = [f"{k}={v}" for k, v in env.items()]
+        cmd = ["sudo", "-n", "-u", self.user, "env", "-i", *env_args,
+               "/bin/bash", "--noprofile", "--norc", "-c", inner]
+
+        with log_file.open("wb") as log:
+            log.write(f"# USER: {self.user}\n".encode())
+            log.write(f"# Executing: {' '.join(shlex.quote(c) for c in cmd)}\n".encode())
+            log.write(f"# ENV: {env}\n".encode())
+            log.flush()
+
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=log,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            try:
+                return await asyncio.wait_for(proc.wait(), timeout=task.timeout)
+            except asyncio.TimeoutError:
+                proc.kill()
+                await proc.wait()
+                log.write(f"\n# TIMEOUT after {task.timeout}s\n".encode())
+                return 124
+
+
 class ChrootExecutor(Executor):
     """Запускает задачу внутри chroot($LFS)."""
 
-    def __init__(self, lfs_root: Path, cwd_inside: str = "/sources"):
+    def __init__(self, lfs_root: Path, cwd_inside: str = "/sources",
+                 jobs: int | None = None):
         self.lfs_root = lfs_root
         self.cwd_inside = cwd_inside
+        # Без MAKEFLAGS make внутри chroot собирает в один поток —
+        # glibc и gcc из-за этого идут в разы дольше.
+        self.jobs = jobs or (os.cpu_count() or 1)
 
     async def run(self, task: Task, log_file: Path) -> int:
+        env = dict(task.env)
+        env.setdefault("MAKEFLAGS", f"-j{self.jobs}")
+        env.setdefault("TESTSUITEFLAGS", f"-j{self.jobs}")
+
         env_args = []
-        for k, v in task.env.items():
+        for k, v in env.items():
             env_args += [f"{k}={v}"]
         env_args += ["HOME=/root", "TERM=xterm", "PATH=/usr/bin:/usr/sbin"]
 
@@ -122,19 +210,22 @@ class SSHExecutor(Executor):
 
 
 class DockerExecutor(Executor):
-    """Запускает задачу в Docker-контейнере."""
-
-    def __init__(self, image: str = "lfs-builder:latest", container_name: str | None = None):
+    def __init__(self, image: str = "lfs-builder:latest"):
         self.image = image
-        self.container_name = container_name
 
     async def run(self, task: Task, log_file: Path) -> int:
+        import shlex, uuid as _uuid
+        cname = (
+            f"lfs-task-{task.id.replace('/', '-').replace('_', '-')}-"
+            f"{_uuid.uuid4().hex[:6]}"
+        )
+
         env_args = []
         for k, v in task.env.items():
             env_args += ["-e", f"{k}={v}"]
 
-        cmd = [
-            "docker", "run", "--rm", "--privileged",
+        run_cmd = [
+            "docker", "run", "-d", "--name", cname, "--privileged",
             "--user", "lfs",
             "-v", "/mnt/lfs:/mnt/lfs",
             "-v", "/root/lfs-build:/lfs-build",
@@ -145,24 +236,91 @@ class DockerExecutor(Executor):
         ]
 
         with log_file.open("wb") as log:
-            log.write(f"# DOCKER: {' '.join(shlex.quote(c) for c in cmd)}\n".encode())
-            log.flush()
-            proc = await asyncio.create_subprocess_exec(
-                *cmd, stdout=log, stderr=asyncio.subprocess.STDOUT,
+            log.write(
+                f"# DOCKER RUN: "
+                f"{' '.join(shlex.quote(c) for c in run_cmd)}\n".encode()
             )
-            try:
-                return await asyncio.wait_for(proc.wait(), timeout=task.timeout)
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
-                return 124
+            log.flush()
 
+            run_proc = await asyncio.create_subprocess_exec(
+                *run_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            stdout, _ = await run_proc.communicate()
+            if run_proc.returncode != 0:
+                log.write(stdout)
+                return run_proc.returncode
+
+            logs_proc = await asyncio.create_subprocess_exec(
+                "docker", "logs", "-f", cname,
+                stdout=log, stderr=asyncio.subprocess.STDOUT,
+            )
+
+            try:
+                wait_proc = await asyncio.create_subprocess_exec(
+                    "docker", "wait", cname,
+                    stdout=asyncio.subprocess.PIPE,
+                )
+                try:
+                    out, _ = await asyncio.wait_for(
+                        wait_proc.communicate(), timeout=task.timeout,
+                    )
+                    rc = int((out or b"1").strip() or "1")
+                except asyncio.TimeoutError:
+                    wait_proc.kill()
+                    await self._docker_stop(cname)
+                    log.write(b"\n# TIMEOUT\n")
+                    return 124
+            except asyncio.CancelledError:
+                await self._docker_stop(cname)
+                log.write(b"\n# CANCELLED by user\n")
+                raise
+            finally:
+                if logs_proc.returncode is None:
+                    logs_proc.terminate()
+                try:
+                    await asyncio.wait_for(logs_proc.wait(), timeout=5)
+                except asyncio.TimeoutError:
+                    logs_proc.kill()
+                # подчищаем контейнер
+                try:
+                    rm = await asyncio.create_subprocess_exec(
+                        "docker", "rm", "-f", cname,
+                        stdout=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.DEVNULL,
+                    )
+                    await rm.wait()
+                except Exception:
+                    pass
+            return rc
+
+    @staticmethod
+    async def _docker_stop(cname: str, timeout: int = 30) -> None:
+        proc = await asyncio.create_subprocess_exec(
+            "docker", "stop", "-t", str(timeout), cname,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=timeout + 10)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
 
 def make_executor(kind: str, **kwargs) -> Executor:
     """Фабрика исполнителей."""
     kind = kind.lower()
     if kind == "local":
         return LocalExecutor(cwd=Path(kwargs.get("cwd", ".")), env=kwargs.get("env"))
+    if kind in ("lfs", "unprivileged"):
+        return UnprivilegedExecutor(
+            user=kwargs.get("user", "lfs"),
+            cwd=Path(kwargs.get("cwd", ".")),
+            env=kwargs.get("env") or {},
+        )
+    if kind == "root":
+        return RootExecutor(cwd=Path(kwargs.get("cwd", ".")), env=kwargs.get("env"))
     if kind == "chroot":
         return ChrootExecutor(lfs_root=Path(kwargs["lfs_root"]))
     if kind == "ssh":

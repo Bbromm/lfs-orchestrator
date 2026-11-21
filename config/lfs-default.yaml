@@ -1,188 +1,950 @@
-# Описание задач сборки LFS 13.1-systemd как DAG
-# Каждая задача = один bash-скрипт или команда
-version: "13.1-systemd"
-
+version: 13.1-systemd
 defaults:
-  executor: local
-  timeout: 7200      # 2 часа на задачу
+  executor: chroot
+  timeout: 7200
   retries: 0
   env:
     LFS: /mnt/lfs
-    LFS_TGT: "x86_64-lfs-linux-gnu"
-
+    LFS_TGT: x86_64-lfs-linux-gnu
+    PATH: /mnt/lfs/tools/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 phases:
-  # ============ ФАЗА 5: Кросс-инструментарий ============
   phase5:
-    name: "Глава 5 — Кросс-инструментарий"
+    executor: lfs
+    name: Глава 5 — Кросс-инструментарий
     tasks:
       binutils-pass1:
         script: scripts/install-chapter5.sh
-        args: ["--only", "binutils-pass1"]
+        args:
+        - --only
+        - binutils-pass1
         deps: []
         sbu_estimate: 1.0
         timeout: 3600
-
       gcc-pass1:
         script: scripts/install-chapter5.sh
-        args: ["--only", "gcc-pass1"]
-        deps: ["binutils-pass1"]
+        args:
+        - --only
+        - gcc-pass1
+        deps:
+        - phase5/binutils-pass1
         sbu_estimate: 4.3
         timeout: 7200
-
       linux-headers:
         script: scripts/install-chapter5.sh
-        args: ["--only", "linux-headers"]
-        deps: ["gcc-pass1"]
+        args:
+        - --only
+        - linux-headers
+        deps:
+        - phase5/gcc-pass1
         sbu_estimate: 0.1
         timeout: 900
-
       glibc:
         script: scripts/install-chapter5.sh
-        args: ["--only", "glibc"]
-        deps: ["linux-headers"]
+        args:
+        - --only
+        - glibc
+        deps:
+        - phase5/linux-headers
         sbu_estimate: 1.3
         timeout: 3600
-
       libstdcpp:
         script: scripts/install-chapter5.sh
-        args: ["--only", "libstdcpp"]
-        deps: ["glibc"]
+        args:
+        - --only
+        - libstdcpp
+        deps:
+        - phase5/glibc
         sbu_estimate: 0.3
         timeout: 1800
-
-  # ============ ФАЗА 6: Временные инструменты ============
   phase6:
-    name: "Глава 6 — Временные инструменты"
+    executor: lfs
+    name: Глава 6 — Временные инструменты
     tasks:
-      m4:         {script: scripts/install-chapter6.sh, args: [--only, m4],         deps: [libstdcpp], sbu_estimate: 0.1}
-      ncurses:    {script: scripts/install-chapter6.sh, args: [--only, ncurses],    deps: [m4],         sbu_estimate: 0.4}
-      bash:       {script: scripts/install-chapter6.sh, args: [--only, bash],       deps: [ncurses],    sbu_estimate: 0.2}
-      coreutils:  {script: scripts/install-chapter6.sh, args: [--only, coreutils],  deps: [bash],       sbu_estimate: 0.3}
-      diffutils:  {script: scripts/install-chapter6.sh, args: [--only, diffutils],  deps: [coreutils],  sbu_estimate: 0.1}
-      file:       {script: scripts/install-chapter6.sh, args: [--only, file],       deps: [diffutils],  sbu_estimate: 0.1}
-      findutils:  {script: scripts/install-chapter6.sh, args: [--only, findutils],  deps: [file],       sbu_estimate: 0.2}
-      gawk:       {script: scripts/install-chapter6.sh, args: [--only, gawk],       deps: [findutils],  sbu_estimate: 0.1}
-      grep:       {script: scripts/install-chapter6.sh, args: [--only, grep],       deps: [gawk],       sbu_estimate: 0.1}
-      gzip:       {script: scripts/install-chapter6.sh, args: [--only, gzip],       deps: [grep],       sbu_estimate: 0.1}
-      make:       {script: scripts/install-chapter6.sh, args: [--only, make],       deps: [gzip],       sbu_estimate: 0.1}
-      patch:      {script: scripts/install-chapter6.sh, args: [--only, patch],      deps: [make],       sbu_estimate: 0.1}
-      sed:        {script: scripts/install-chapter6.sh, args: [--only, sed],        deps: [patch],      sbu_estimate: 0.1}
-      tar:        {script: scripts/install-chapter6.sh, args: [--only, tar],        deps: [sed],        sbu_estimate: 0.1}
-      xz:         {script: scripts/install-chapter6.sh, args: [--only, xz],         deps: [tar],        sbu_estimate: 0.1}
-      binutils-pass2: {script: scripts/install-chapter6.sh, args: [--only, binutils-pass2], deps: [xz], sbu_estimate: 0.4}
-      gcc-pass2:  {script: scripts/install-chapter6.sh, args: [--only, gcc-pass2],  deps: [binutils-pass2], sbu_estimate: 5.2}
-
-  # ============ ФАЗА 7: Chroot ============
-  phase7:
-    name: "Глава 7 — Chroot и доп. инструменты"
-    tasks:
-      chroot-setup:
-        script: scripts/install-chapter7.sh
-        args: ["--phase-a"]
-        deps: [gcc-pass2]
+      m4:
+        script: scripts/install-chapter6.sh
+        args:
+        - --only
+        - m4
+        deps:
+        - phase5/libstdcpp
         sbu_estimate: 0.1
-        timeout: 900
-
-      extra-tools:
-        script: scripts/install-chapter7.sh
-        args: ["--only-phase-b"]
-        deps: [chroot-setup]
-        sbu_estimate: 3.0
-        timeout: 7200
-
-  # ============ ФАЗА 8: Параллельно собираемые пакеты ============
-  phase8:
-    name: "Глава 8 — Базовое системное ПО"
-    max_parallel: 4        # переопределяет глобальный
+      ncurses:
+        script: scripts/install-chapter6.sh
+        args:
+        - --only
+        - ncurses
+        deps:
+        - phase6/m4
+        sbu_estimate: 0.4
+      bash:
+        script: scripts/install-chapter6.sh
+        args:
+        - --only
+        - bash
+        deps:
+        - phase6/ncurses
+        sbu_estimate: 0.2
+      coreutils:
+        script: scripts/install-chapter6.sh
+        args:
+        - --only
+        - coreutils
+        deps:
+        - phase6/bash
+        sbu_estimate: 0.3
+      diffutils:
+        script: scripts/install-chapter6.sh
+        args:
+        - --only
+        - diffutils
+        deps:
+        - phase6/coreutils
+        sbu_estimate: 0.1
+      file:
+        script: scripts/install-chapter6.sh
+        args:
+        - --only
+        - file
+        deps:
+        - phase6/diffutils
+        sbu_estimate: 0.1
+      findutils:
+        script: scripts/install-chapter6.sh
+        args:
+        - --only
+        - findutils
+        deps:
+        - phase6/file
+        sbu_estimate: 0.2
+      gawk:
+        script: scripts/install-chapter6.sh
+        args:
+        - --only
+        - gawk
+        deps:
+        - phase6/findutils
+        sbu_estimate: 0.1
+      grep:
+        script: scripts/install-chapter6.sh
+        args:
+        - --only
+        - grep
+        deps:
+        - phase6/gawk
+        sbu_estimate: 0.1
+      gzip:
+        script: scripts/install-chapter6.sh
+        args:
+        - --only
+        - gzip
+        deps:
+        - phase6/grep
+        sbu_estimate: 0.1
+      make:
+        script: scripts/install-chapter6.sh
+        args:
+        - --only
+        - make
+        deps:
+        - phase6/gzip
+        sbu_estimate: 0.1
+      patch:
+        script: scripts/install-chapter6.sh
+        args:
+        - --only
+        - patch
+        deps:
+        - phase6/make
+        sbu_estimate: 0.1
+      sed:
+        script: scripts/install-chapter6.sh
+        args:
+        - --only
+        - sed
+        deps:
+        - phase6/patch
+        sbu_estimate: 0.1
+      tar:
+        script: scripts/install-chapter6.sh
+        args:
+        - --only
+        - tar
+        deps:
+        - phase6/sed
+        sbu_estimate: 0.1
+      xz:
+        script: scripts/install-chapter6.sh
+        args:
+        - --only
+        - xz
+        deps:
+        - phase6/tar
+        sbu_estimate: 0.1
+      binutils-pass2:
+        script: scripts/install-chapter6.sh
+        args:
+        - --only
+        - binutils-pass2
+        deps:
+        - phase6/xz
+        sbu_estimate: 0.4
+      gcc-pass2:
+        script: scripts/install-chapter6.sh
+        args:
+        - --only
+        - gcc-pass2
+        deps:
+        - phase6/binutils-pass2
+        sbu_estimate: 5.2
+  phase7:
+    name: Глава 7 — Chroot и временные инструменты
+    executor: root
     tasks:
-      # --- Независимые (стартуют сразу после extra-tools) ---
-      zlib:         {script: scripts/install-chapter8.sh, args: [--only, zlib],         deps: [extra-tools], sbu_estimate: 0.1}
-      bzip2:        {script: scripts/install-chapter8.sh, args: [--only, bzip2],        deps: [extra-tools], sbu_estimate: 0.1}
-      xz:           {script: scripts/install-chapter8.sh, args: [--only, xz],           deps: [extra-tools], sbu_estimate: 0.1}
-      lz4:          {script: scripts/install-chapter8.sh, args: [--only, lz4],          deps: [extra-tools], sbu_estimate: 0.1}
-      zstd:         {script: scripts/install-chapter8.sh, args: [--only, zstd],         deps: [extra-tools], sbu_estimate: 0.4}
-      file:         {script: scripts/install-chapter8.sh, args: [--only, file],         deps: [extra-tools], sbu_estimate: 0.1}
-      m4:           {script: scripts/install-chapter8.sh, args: [--only, m4],           deps: [extra-tools], sbu_estimate: 0.4}
-      bc:           {script: scripts/install-chapter8.sh, args: [--only, bc],           deps: [extra-tools], sbu_estimate: 0.1}
-      flex:         {script: scripts/install-chapter8.sh, args: [--only, flex],         deps: [extra-tools], sbu_estimate: 0.1}
-      psmisc:       {script: scripts/install-chapter8.sh, args: [--only, psmisc],       deps: [extra-tools], sbu_estimate: 0.1}
-      less:         {script: scripts/install-chapter8.sh, args: [--only, less],         deps: [extra-tools], sbu_estimate: 0.1}
-      gperf:        {script: scripts/install-chapter8.sh, args: [--only, gperf],        deps: [extra-tools], sbu_estimate: 0.2}
-      expat:        {script: scripts/install-chapter8.sh, args: [--only, expat],        deps: [extra-tools], sbu_estimate: 0.1}
-
-      # --- GMP/MPFR/MPC цепочка ---
-      gmp:          {script: scripts/install-chapter8.sh, args: [--only, gmp],          deps: [extra-tools], sbu_estimate: 0.3}
-      mpfr:         {script: scripts/install-chapter8.sh, args: [--only, mpfr],         deps: [gmp],         sbu_estimate: 0.2}
-      mpc:          {script: scripts/install-chapter8.sh, args: [--only, mpc],          deps: [mpfr],        sbu_estimate: 0.1}
-
-      # --- Системные библиотеки ---
-      attr:         {script: scripts/install-chapter8.sh, args: [--only, attr],         deps: [extra-tools], sbu_estimate: 0.1}
-      acl:          {script: scripts/install-chapter8.sh, args: [--only, acl],          deps: [attr],        sbu_estimate: 0.1}
-      libcap:       {script: scripts/install-chapter8.sh, args: [--only, libcap],       deps: [attr],        sbu_estimate: 0.1}
-      libffi:       {script: scripts/install-chapter8.sh, args: [--only, libffi],       deps: [extra-tools], sbu_estimate: 1.7}
-      sqlite:       {script: scripts/install-chapter8.sh, args: [--only, sqlite],       deps: [extra-tools], sbu_estimate: 0.4}
-      readline:     {script: scripts/install-chapter8.sh, args: [--only, readline],     deps: [extra-tools], sbu_estimate: 0.1}
-      pcre2:        {script: scripts/install-chapter8.sh, args: [--only, pcre2],        deps: [readline],    sbu_estimate: 0.2}
-      gdbm:         {script: scripts/install-chapter8.sh, args: [--only, gdbm],         deps: [extra-tools], sbu_estimate: 0.2}
-
-      # --- Инструменты разработки ---
-      gawk:         {script: scripts/install-chapter8.sh, args: [--only, gawk],         deps: [mpfr],        sbu_estimate: 0.2}
-      bison:        {script: scripts/install-chapter8.sh, args: [--only, bison],        deps: [m4],          sbu_estimate: 2.1}
-      grep:         {script: scripts/install-chapter8.sh, args: [--only, grep],         deps: [pcre2],       sbu_estimate: 0.5}
-      diffutils:    {script: scripts/install-chapter8.sh, args: [--only, diffutils],    deps: [extra-tools], sbu_estimate: 0.4}
-      findutils:    {script: scripts/install-chapter8.sh, args: [--only, findutils],    deps: [extra-tools], sbu_estimate: 0.9}
-      make:         {script: scripts/install-chapter8.sh, args: [--only, make],         deps: [extra-tools], sbu_estimate: 0.6}
-      patch:        {script: scripts/install-chapter8.sh, args: [--only, patch],        deps: [attr],        sbu_estimate: 0.2}
-      sed:          {script: scripts/install-chapter8.sh, args: [--only, sed],          deps: [acl, attr],   sbu_estimate: 0.4}
-      tar:          {script: scripts/install-chapter8.sh, args: [--only, tar],          deps: [acl, attr],   sbu_estimate: 0.5}
-
-      # --- Python-стек ---
-      mpdecimal:    {script: scripts/install-chapter8.sh, args: [--only, mpdecimal],    deps: [extra-tools], sbu_estimate: 0.1}
-      python:       {script: scripts/install-chapter8.sh, args: [--only, python],       deps: [mpdecimal, expat, libffi, sqlite, zlib], sbu_estimate: 2.7, timeout: 10800}
-      flit-core:    {script: scripts/install-chapter8.sh, args: [--only, flit-core],    deps: [python],      sbu_estimate: 0.1}
-      packaging:    {script: scripts/install-chapter8.sh, args: [--only, packaging],    deps: [flit-core],   sbu_estimate: 0.1}
-      wheel:        {script: scripts/install-chapter8.sh, args: [--only, wheel],        deps: [packaging],   sbu_estimate: 0.1}
-      setuptools:   {script: scripts/install-chapter8.sh, args: [--only, setuptools],   deps: [wheel],       sbu_estimate: 0.1}
-      meson:        {script: scripts/install-chapter8.sh, args: [--only, meson],        deps: [setuptools],  sbu_estimate: 0.1}
-      markupsafe:   {script: scripts/install-chapter8.sh, args: [--only, markupsafe],   deps: [setuptools],  sbu_estimate: 0.1}
-      jinja2:       {script: scripts/install-chapter8.sh, args: [--only, jinja2],       deps: [markupsafe],  sbu_estimate: 0.1}
-
-      # --- Верхний уровень (зависит от многих) ---
-      kmod:         {script: scripts/install-chapter8.sh, args: [--only, kmod],         deps: [zstd, openssl], sbu_estimate: 0.1}
-      systemd:      {script: scripts/install-chapter8.sh, args: [--only, systemd],      deps: [kmod, jinja2, meson, openssl, pcre2, util-linux], sbu_estimate: 1.2}
-      dbus:         {script: scripts/install-chapter8.sh, args: [--only, dbus],         deps: [systemd, util-linux], sbu_estimate: 0.1}
-
-  # ============ ФАЗА 9: Конфигурация ============
+      chroot-and-tools:
+        script: scripts/install-chapter7.sh
+        args:
+        - --phase-a
+        deps:
+        - phase6/gcc-pass2
+        sbu_estimate: 1.5
+        timeout: 14400
+  phase8:
+    executor: chroot
+    name: Глава 8 — Базовое системное ПО
+    max_parallel: 4
+    tasks:
+      man-pages:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - man-pages
+        deps: []
+        sbu_estimate: 0.1
+      iana-etc:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - iana-etc
+        deps:
+        - phase7/chroot-and-tools
+        sbu_estimate: 0.1
+      glibc:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - glibc
+        deps:
+        - phase7/chroot-and-tools
+        sbu_estimate: 4.5
+        timeout: 7200
+      zlib:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - zlib
+        deps:
+        - phase7/chroot-and-tools
+        sbu_estimate: 0.1
+      bzip2:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - bzip2
+        deps:
+        - phase7/chroot-and-tools
+        sbu_estimate: 0.1
+      xz:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - xz
+        deps:
+        - phase7/chroot-and-tools
+        sbu_estimate: 0.1
+      lz4:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - lz4
+        deps:
+        - phase7/chroot-and-tools
+        sbu_estimate: 0.1
+      zstd:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - zstd
+        deps:
+        - phase7/chroot-and-tools
+        sbu_estimate: 0.4
+      file:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - file
+        deps:
+        - phase7/chroot-and-tools
+        sbu_estimate: 0.1
+      readline:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - readline
+        deps:
+        - phase7/chroot-and-tools
+        sbu_estimate: 0.1
+      pcre2:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - pcre2
+        deps:
+        - phase8/readline
+        - phase8/zlib
+        - phase8/bzip2
+        sbu_estimate: 0.2
+      m4:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - m4
+        deps:
+        - phase7/chroot-and-tools
+        sbu_estimate: 0.4
+      bc:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - bc
+        deps:
+        - phase7/chroot-and-tools
+        sbu_estimate: 0.1
+      flex:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - flex
+        deps:
+        - phase7/chroot-and-tools
+        sbu_estimate: 0.1
+      tcl:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - tcl
+        deps:
+        - phase7/chroot-and-tools
+        sbu_estimate: 0.4
+      expect:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - expect
+        deps:
+        - phase8/tcl
+        sbu_estimate: 0.1
+      dejagnu:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - dejagnu
+        deps:
+        - phase8/expect
+        sbu_estimate: 0.1
+      ninja:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - ninja
+        deps:
+        - phase8/dejagnu
+        sbu_estimate: 0.1
+      pkgconf:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - pkgconf
+        deps:
+        - phase8/ninja
+        sbu_estimate: 0.1
+      binutils:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - binutils
+        deps:
+        - phase8/zlib
+        sbu_estimate: 1.5
+        timeout: 3600
+      gmp:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - gmp
+        deps:
+        - phase7/chroot-and-tools
+        sbu_estimate: 0.3
+      mpfr:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - mpfr
+        deps:
+        - phase8/gmp
+        sbu_estimate: 0.2
+      mpc:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - mpc
+        deps:
+        - phase8/mpfr
+        sbu_estimate: 0.1
+      attr:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - attr
+        deps:
+        - phase7/chroot-and-tools
+        sbu_estimate: 0.1
+      acl:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - acl
+        deps:
+        - phase8/attr
+        sbu_estimate: 0.1
+      libcap:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - libcap
+        deps:
+        - phase8/attr
+        sbu_estimate: 0.1
+      libxcrypt:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - libxcrypt
+        deps:
+        - phase7/chroot-and-tools
+        sbu_estimate: 0.1
+      shadow:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - shadow
+        deps:
+        - phase8/libxcrypt
+        - phase8/attr
+        - phase8/acl
+        sbu_estimate: 0.1
+      gawk:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - gawk
+        deps:
+        - phase8/mpfr
+        sbu_estimate: 0.2
+      gcc:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - gcc
+        deps:
+        - phase8/binutils
+        - phase8/gmp
+        - phase8/mpfr
+        - phase8/mpc
+        - phase8/zstd
+        sbu_estimate: 5.0
+        timeout: 10800
+      ncurses:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - ncurses
+        deps:
+        - phase7/chroot-and-tools
+        sbu_estimate: 0.4
+      sed:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - sed
+        deps:
+        - phase8/acl
+        - phase8/attr
+        sbu_estimate: 0.4
+      psmisc:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - psmisc
+        deps:
+        - phase8/ncurses
+        sbu_estimate: 0.1
+      gettext:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - gettext
+        deps:
+        - phase7/chroot-and-tools
+        sbu_estimate: 1.2
+      bison:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - bison
+        deps:
+        - phase8/m4
+        sbu_estimate: 2.1
+      grep:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - grep
+        deps:
+        - phase8/pcre2
+        sbu_estimate: 0.5
+      bash:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - bash
+        deps:
+        - phase8/ncurses
+        - phase8/readline
+        sbu_estimate: 0.4
+      libtool:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - libtool
+        deps:
+        - phase8/grep
+        sbu_estimate: 0.5
+      gdbm:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - gdbm
+        deps:
+        - phase8/bash
+        sbu_estimate: 0.2
+      gperf:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - gperf
+        deps:
+        - phase7/chroot-and-tools
+        sbu_estimate: 0.2
+      expat:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - expat
+        deps:
+        - phase7/chroot-and-tools
+        sbu_estimate: 0.1
+      inetutils:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - inetutils
+        deps:
+        - phase7/chroot-and-tools
+        sbu_estimate: 0.3
+      less:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - less
+        deps:
+        - phase8/ncurses
+        sbu_estimate: 0.1
+      perl:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - perl
+        deps:
+        - phase8/less
+        sbu_estimate: 6.0
+        timeout: 10800
+      autoconf:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - autoconf
+        deps:
+        - phase8/perl
+        - phase8/m4
+        sbu_estimate: 0.4
+      automake:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - automake
+        deps:
+        - phase8/autoconf
+        sbu_estimate: 0.5
+      openssl:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - openssl
+        deps:
+        - phase8/perl
+        sbu_estimate: 1.6
+        timeout: 3600
+      libelf:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - libelf
+        deps:
+        - phase7/chroot-and-tools
+        sbu_estimate: 0.4
+      libffi:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - libffi
+        deps:
+        - phase7/chroot-and-tools
+        sbu_estimate: 1.7
+      sqlite:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - sqlite
+        deps:
+        - phase8/libffi
+        sbu_estimate: 0.4
+      mpdecimal:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - mpdecimal
+        deps:
+        - phase7/chroot-and-tools
+        sbu_estimate: 0.1
+      python:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - python
+        deps:
+        - phase8/mpdecimal
+        - phase8/expat
+        - phase8/libffi
+        - phase8/sqlite
+        - phase8/zlib
+        - phase8/openssl
+        sbu_estimate: 2.7
+        timeout: 10800
+      flit-core:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - flit-core
+        deps:
+        - phase8/python
+        sbu_estimate: 0.1
+      packaging:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - packaging
+        deps:
+        - phase8/flit-core
+        sbu_estimate: 0.1
+      wheel:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - wheel
+        deps:
+        - phase8/packaging
+        sbu_estimate: 0.1
+      setuptools:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - setuptools
+        deps:
+        - phase8/wheel
+        sbu_estimate: 0.1
+      meson:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - meson
+        deps:
+        - phase8/setuptools
+        sbu_estimate: 0.1
+      kmod:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - kmod
+        deps:
+        - phase8/zstd
+        - phase8/openssl
+        - phase8/meson
+        sbu_estimate: 0.1
+      coreutils:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - coreutils
+        deps:
+        - phase8/acl
+        - phase8/attr
+        - phase8/libcap
+        - phase8/gmp
+        sbu_estimate: 0.9
+        timeout: 5400
+      diffutils:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - diffutils
+        deps:
+        - phase7/chroot-and-tools
+        sbu_estimate: 0.4
+      findutils:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - findutils
+        deps:
+        - phase7/chroot-and-tools
+        sbu_estimate: 0.9
+      groff:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - groff
+        deps:
+        - phase8/gcc
+        sbu_estimate: 0.5
+      grub:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - grub
+        deps:
+        - phase8/gcc
+        sbu_estimate: 0.4
+      gzip:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - gzip
+        deps:
+        - phase7/chroot-and-tools
+        sbu_estimate: 0.1
+      iproute2:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - iproute2
+        deps:
+        - phase8/libelf
+        - phase8/flex
+        - phase8/bison
+        sbu_estimate: 0.2
+      kbd:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - kbd
+        deps:
+        - phase7/chroot-and-tools
+        sbu_estimate: 0.1
+      libpipeline:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - libpipeline
+        deps:
+        - phase7/chroot-and-tools
+        sbu_estimate: 0.1
+      make:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - make
+        deps:
+        - phase7/chroot-and-tools
+        sbu_estimate: 0.6
+      patch:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - patch
+        deps:
+        - phase8/attr
+        sbu_estimate: 0.2
+      tar:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - tar
+        deps:
+        - phase8/acl
+        - phase8/attr
+        sbu_estimate: 0.5
+      texinfo:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - texinfo
+        deps:
+        - phase8/perl
+        sbu_estimate: 0.5
+      vim:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - vim
+        deps:
+        - phase8/ncurses
+        - phase8/acl
+        sbu_estimate: 0.5
+      markupsafe:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - markupsafe
+        deps:
+        - phase8/setuptools
+        sbu_estimate: 0.1
+      jinja2:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - jinja2
+        deps:
+        - phase8/markupsafe
+        sbu_estimate: 0.1
+      systemd:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - systemd
+        deps:
+        - phase8/kmod
+        - phase8/jinja2
+        - phase8/meson
+        - phase8/openssl
+        - phase8/pcre2
+        sbu_estimate: 1.2
+        timeout: 7200
+      dbus:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - dbus
+        deps:
+        - phase8/systemd
+        sbu_estimate: 0.1
+      mandb:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - mandb
+        deps:
+        - phase8/libpipeline
+        - phase8/gdbm
+        - phase8/perl
+        sbu_estimate: 0.3
+      procps:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - procps
+        deps:
+        - phase8/ncurses
+        sbu_estimate: 0.2
+      util-linux:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - util-linux
+        deps:
+        - phase8/openssl
+        sbu_estimate: 0.4
+      e2fsprogs:
+        script: scripts/install-chapter8.sh
+        args:
+        - --only
+        - e2fsprogs
+        deps:
+        - phase8/util-linux
+        sbu_estimate: 0.5
   phase9:
-    name: "Глава 9 — Конфигурация системы"
+    executor: chroot
+    name: Глава 9 — Конфигурация системы
     tasks:
       configure:
         script: scripts/phase5-chapter9.sh
-        deps: [dbus]      # или последняя задача из фазы 8
+        deps:
+        - phase8/dbus
         sbu_estimate: 0.1
         env:
           HOSTNAME: lfs
           TIMEZONE: Europe/Moscow
           LOCALE: ru_RU.UTF-8
-
-  # ============ ФАЗА 10: Ядро + GRUB ============
   phase10:
-    name: "Глава 10 — Ядро + GRUB"
+    executor: chroot
+    name: Глава 10 — Ядро + GRUB
     tasks:
       kernel:
         script: scripts/phase6-chapter10.sh
-        deps: [configure]
+        deps:
+        - phase9/configure
         sbu_estimate: 2.5
         timeout: 10800
         env:
           KERNEL_CONFIG_METHOD: defconfig
-          KERNEL_JOBS: "8"
-
-  # ============ ФАЗА 11: Финализация ============
+          KERNEL_JOBS: '8'
   phase11:
-    name: "Глава 11 — Финализация"
+    executor: chroot
+    name: Глава 11 — Финализация
     tasks:
       finalize:
         script: scripts/postinstall.sh
-        deps: [kernel]
+        deps:
+        - phase10/kernel
         sbu_estimate: 0.1
+
+  phase12:
+    name: После базы — пользователь, Nix, SSH, графика
+    executor: chroot
+    tasks:
+      postbase:
+        script: scripts/install-phase12.sh
+        args: []
+        deps: [phase11/finalize]
+        sbu_estimate: 0.5
+        timeout: 7200
+
+  phase13:
+    name: Графический рабочий стол (Xorg + XFCE через Nix)
+    executor: chroot
+    tasks:
+      desktop:
+        script: scripts/install-phase13-desktop.sh
+        args: []
+        deps: [phase12/postbase]
+        sbu_estimate: 0.5
+        timeout: 7200

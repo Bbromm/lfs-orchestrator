@@ -1,0 +1,34 @@
+#!/bin/bash
+# as-lfs — выполнить команду от пользователя lfs в окружении LFS (как в книге, 4.4)
+#
+# Почему не `su - lfs`/`bash -lc`: /home/lfs/.bash_profile содержит
+#   exec env -i HOME=$HOME TERM=$TERM PS1=... /bin/bash
+# то есть заменяет шелл и теряет переданную команду. Поэтому окружение
+# выставляется явно, а профили не читаются.
+#
+# Использование:
+#   as-lfs 'make --version'
+#   as-lfs 'cd /mnt/lfs/sources && bash scripts/install-chapter5.sh --only binutils-pass1'
+set -u
+
+LFS="${LFS:-/mnt/lfs}"
+LFS_TGT="${LFS_TGT:-$(uname -m)-lfs-linux-gnu}"
+
+if [[ $# -eq 0 ]]; then
+    echo "использование: $0 '<команда>'" >&2
+    exit 2
+fi
+
+cmd="set +h; umask 022; $*"
+
+exec sudo -n -u lfs env -i \
+    HOME=/home/lfs \
+    TERM="${TERM:-xterm}" \
+    USER=lfs LOGNAME=lfs \
+    LFS="$LFS" \
+    LFS_TGT="$LFS_TGT" \
+    LC_ALL=POSIX \
+    PATH="$LFS/tools/bin:/usr/bin:/bin" \
+    CONFIG_SITE="$LFS/usr/share/config.site" \
+    MAKEFLAGS="-j$(nproc)" \
+    /bin/bash --noprofile --norc -c "$cmd"

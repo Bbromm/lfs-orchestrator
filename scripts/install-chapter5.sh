@@ -19,7 +19,21 @@
 
 # Строгий режим: выход при ошибке, при неинициализированной переменной,
 # при ошибке в конвейере
-set -euo pipefail
+#set -euo pipefail
+CURRENT_STAGE=""
+cleanup_on_signal() {
+    echo "[$(date)] Получен SIGTERM, прерываю стадию '$CURRENT_STAGE'..."
+    # Убить дочерние процессы (make, gcc, patch, tar)
+    pkill -TERM -P $$ 2>/dev/null || true
+    sleep 2
+    pkill -KILL -P $$ 2>/dev/null || true
+    exit 143
+}
+trap cleanup_on_signal SIGTERM SIGINT
+
+# и в main() перед каждой стадией:
+# CURRENT_STAGE=glibc
+# should_run glibc && build_glibc
 
 #-----------------------------------------------------------------------------
 # Константы и переменные
@@ -55,8 +69,36 @@ warn() {
 
 die() {
     echo -e "${RED}[ERROR]${NC} $*" >&2
-    exit 1
+    exit 2
 }
+
+#-----------------------------------------------------------------------------
+# Разбор аргументов командной строки
+#-----------------------------------------------------------------------------
+ONLY=""
+ASSUME_YES="${ASSUME_YES:-0}"
+[[ -t 0 ]] || ASSUME_YES=1     # нет TTY (оркестратор/docker без -it) → не спрашивать
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --only)   ONLY="${2:-}"; [[ -n "$ONLY" ]] || die "--only требует имя стадии"; shift 2 ;;
+        --yes|-y) ASSUME_YES=1; shift ;;
+        -h|--help)
+            cat <<EOF
+Использование: $0 [--only <stage>] [--yes]
+
+Стадии: binutils-pass1 | gcc-pass1 | linux-headers | glibc | libstdcpp
+EOF
+            exit 0 ;;
+        *) die "Неизвестный аргумент: $1" ;;
+    esac
+done
+
+should_run() {
+    [[ -z "$ONLY" || "$ONLY" == "$1" ]]
+}
+
+
 
 # Извлечение tarball'а и переход в каталог сборки
 extract() {
@@ -136,10 +178,11 @@ check_prerequisites() {
     ok "Все необходимые tarball'ы и патчи найдены"
 
     # Проверка, что предыдущие версии инструментов не конфликтуют
-    if [[ -n "$(ls -A "$LFS/tools/bin" 2>/dev/null)" ]]; then
-        warn "$LFS/tools/bin не пуст. Возможно, предыдущая сборка?"
-        read -rp "Продолжить? [y/N] " ans
-        [[ "$ans" =~ ^[Yy]$ ]] || die "Отменено пользователем"
+    if [[ "$ASSUME_YES" == "1" ]]; then
+        warn "ASSUME_YES=1 — продолжаем без подтверждения"
+    else
+        read -rp 'Продолжить? [y/N] ' ans
+        [[ "$ans" =~ ^[yY]$ ]] || die "Отменено пользователем"
     fi
 }
 
@@ -476,15 +519,26 @@ main() {
     echo "#################################################################"
     echo ""
 
+    if [[ -n "$ONLY" ]]; then
+        case "$ONLY" in
+            binutils-pass1|gcc-pass1|linux-headers|glibc|libstdcpp) ;;
+            *) die "Стадия '$ONLY' не существует. Допустимые: binutils-pass1, gcc-pass1, linux-headers, glibc, libstdcpp" ;;
+        esac
+        echo ">>> Режим --only: будет выполнена только стадия '$ONLY'"
+    fi
+
     check_prerequisites
 
-    build_binutils_pass1
-    build_gcc_pass1
-    build_linux_headers
-    build_glibc
-    build_libstdcpp
+    should_run binutils-pass1 && build_binutils_pass1
+    should_run gcc-pass1      && build_gcc_pass1
+    should_run linux-headers  && build_linux_headers
+    should_run glibc          && build_glibc
+    should_run libstdcpp      && build_libstdcpp
 
-    final_summary
+
+    if [[ -z "$ONLY" ]]; then
+        final_summary
+    fi
 
     echo ""
     echo "#################################################################"

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -15,14 +16,16 @@ from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
 
 from .config import load_settings, load_tasks_config, filter_phases
 from .dag import DAG, DAGError
-from .executor import make_executor
+from .executor import Executor, make_executor
 from .metrics import metrics
 from .scheduler import BuildScheduler
+from .settings_store import SettingsStore
 from .state import StateStore
 from .task import Task
 
 settings = load_settings()
 store = StateStore(settings.db_path)
+app_settings = SettingsStore(Path("data/settings.json"), Path(settings.root))
 
 app = FastAPI(title="LFS Orchestrator", version="1.0.0")
 
@@ -38,7 +41,7 @@ class StartBuildRequest(BaseModel):
     max_parallel: int | None = None
     run_tests: bool | None = None
     stop_on_error: bool | None = None
-
+    force: bool = False 
 
 class BuildResponse(BaseModel):
     build_id: str
@@ -52,6 +55,49 @@ async def health():
     return {"status": "ok", "time": datetime.utcnow().isoformat()}
 
 
+@app.get("/api/phases")
+async def list_phases(config_path: str = "config/lfs-default.yaml"):
+    """Фазы из конфига: какие есть и сколько в них задач.
+
+    default_phases — что предложить в интерфейсе: первая фаза, где ещё
+    есть несобранные задачи.
+    """
+    try:
+        parsed, _ = load_tasks_config(config_path)
+    except Exception as e:
+        raise HTTPException(400, f"Ошибка конфигурации: {e}")
+
+    markers_root = Path(settings.root) / ".lfs-state"
+    out = []
+    default: list[str] = []
+    for name, ph in parsed.items():
+        tasks = ph["tasks"]
+        pending = [
+            t for t in tasks
+            if not (markers_root / t.phase / f"{t.name}.done").exists()
+        ]
+        out.append({
+            "name": name,
+            "title": ph.get("name", name),
+            "tasks": len(tasks),
+            "pending": len(pending),
+        })
+        if pending and not default:
+            default.append(name)
+
+    # вместе с первой незавершённой добавим следующие, чтобы сборка шла подряд
+    if default:
+        idx = [p["name"] for p in out].index(default[0])
+        default = [p["name"] for p in out[idx:]]
+
+    return {
+        "phases": out,
+        "default_phases": default or ([out[-1]["name"]] if out else []),
+        "markers_dir": str(markers_root),
+        "executor": settings.executor,
+    }
+
+
 # ---------- Metrics ----------
 
 @app.get("/metrics")
@@ -62,18 +108,64 @@ async def prometheus_metrics():
     )
 
 
+# ---------- Settings (то, что спрашиваем в интерфейсе) ----------
+
+@app.get("/api/settings")
+async def get_settings():
+    return app_settings.public()
+
+
+@app.put("/api/settings")
+async def put_settings(patch: dict):
+    try:
+        saved = app_settings.save(patch)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {
+        "ok": True,
+        "settings": app_settings.public(),
+        "published_to": str(app_settings.lfs_path),
+        "user": saved["user"]["name"] or None,
+    }
+
+
 # ---------- Builds ----------
 
 @app.post("/api/builds", response_model=BuildResponse)
 async def start_build(req: StartBuildRequest):
     try:
         parsed, _ = load_tasks_config(req.config_path)
-        tasks = filter_phases(parsed, req.phases)
+    except Exception as e:
+        raise HTTPException(400, f"Ошибка конфигурации: {e}")
+
+    # Запрошенные фазы могут ссылаться на задачи предыдущих. Берём набор
+    # от начала списка до последней запрошенной фазы: уже собранное
+    # пропустится по маркерам, а зависимости всегда разрешатся.
+    order = list(parsed)
+    requested = [p for p in req.phases if p in parsed]
+    unknown = [p for p in req.phases if p not in parsed]
+    if unknown:
+        raise HTTPException(400, f"Неизвестные фазы: {', '.join(unknown)}")
+    if not requested:
+        raise HTTPException(400, "Нет фаз для выполнения")
+
+    last = max(order.index(p) for p in requested)
+    phases = order[: last + 1]
+
+    try:
+        tasks = filter_phases(parsed, phases)
     except Exception as e:
         raise HTTPException(400, f"Ошибка конфигурации: {e}")
 
     if not tasks:
         raise HTTPException(400, "Нет задач для выполнения")
+
+    # Настройки из интерфейса превращаются в переменные окружения задач:
+    # сеть и имя машины для главы 9, пользователь и компоненты для главы 12.
+    for task in tasks:
+        phase_env = app_settings.env_for_phase(task.phase)
+        if phase_env:
+            task.env = {**task.env, **phase_env}
 
     try:
         dag = DAG(tasks)
@@ -89,14 +181,48 @@ async def start_build(req: StartBuildRequest):
         key=settings.ssh_key,
     )
 
+    # Исполнители для задач, которым нужен другой контекст:
+    #   lfs    — главы 2–6, на хосте от пользователя lfs
+    #   chroot — главы 7B–11, внутри $LFS
+    lfs_env = {
+        "HOME": "/home/lfs",
+        "USER": "lfs",
+        "LOGNAME": "lfs",
+        "TERM": "xterm",
+        "LFS": settings.root,
+        "LFS_TGT": os.environ.get("LFS_TGT", "x86_64-lfs-linux-gnu"),
+        "LC_ALL": "POSIX",
+        "PATH": f"{settings.root}/tools/bin:/usr/bin:/bin",
+        "CONFIG_SITE": f"{settings.root}/usr/share/config.site",
+        "MAKEFLAGS": f"-j{os.cpu_count() or 1}",
+    }
+    executors: dict[str, Executor] = {}
+    for kind in ("root", "lfs", "chroot", "local"):
+        try:
+            executors[kind] = make_executor(
+                kind,
+                cwd=Path.cwd(),
+                lfs_root=settings.root,
+                env=lfs_env,
+                host=settings.ssh_host,
+                user=settings.ssh_user,
+                key=settings.ssh_key,
+            )
+        except Exception:
+            pass
+
     scheduler = BuildScheduler(
         dag=dag,
         executor=executor,
+        executors=executors,
         store=store,
         logs_dir=Path(settings.logs_dir),
         max_parallel=req.max_parallel or settings.max_parallel,
         stop_on_error=req.stop_on_error if req.stop_on_error is not None else settings.stop_on_error,
         on_event=lambda level, tid, msg: asyncio.create_task(_broadcast(scheduler.build_id, level, tid, msg)),
+        markers_dir=Path(settings.root) / ".lfs-state",
+        force=req.force,
+        force_phases=set(requested) if req.force else None,
     )
     active_builds[scheduler.build_id] = scheduler
 
@@ -231,9 +357,17 @@ WEB_DIR = Path(__file__).parent / "web"
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    return (WEB_DIR / "index.html").read_text()
+    return HTMLResponse(
+        (WEB_DIR / "index.html").read_text(),
+        headers={"Cache-Control": "no-store, must-revalidate"},
+    )
 
 
 @app.get("/app.js")
 async def app_js():
-    return FileResponse(WEB_DIR / "app.js", media_type="application/javascript")
+    # no-store: иначе браузер держит старый интерфейс после правок
+    return FileResponse(
+        WEB_DIR / "app.js",
+        media_type="application/javascript",
+        headers={"Cache-Control": "no-store, must-revalidate"},
+    )

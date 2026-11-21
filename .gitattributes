@@ -1,0 +1,14 @@
+# Скрипты и конфиги LFS обязаны быть с LF: CRLF внутри chroot ломает
+# shebang ("/bin/bash^M: bad interpreter"), поэтому LF навязывается всем
+# текстовым файлам независимо от настроек git на машине.
+* text=auto eol=lf
+
+# Двоичное не трогаем
+*.ico binary
+*.ico -text
+*.png binary
+*.png -text
+*.db binary
+*.db -text
+*.tar.* binary
+*.tar.* -text

@@ -2,7 +2,7 @@
 ###############################################################################
 # LFS 13.1-systemd — Глава 6: Кросс-компиляция временных инструментов
 # Запускать от имени пользователя 'lfs' в $LFS/sources
-# Использование: bash install-chapter6.sh 2>&1 | tee chapter6.log
+# Использование: bash install-chapter6.sh [--only <stage>] [--yes]
 ###############################################################################
 set -euo pipefail
 
@@ -17,8 +17,40 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC
 log()  { echo -e "${BLUE}[$(date +%H:%M:%S)]${NC} $*"; }
 ok()   { echo -e "${GREEN}[OK]${NC} $*"; }
 warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
-die()  { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
+die()  { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 2; }
 section() { echo; echo "==================================================================="; echo "  $*"; echo "==================================================================="; echo; }
+
+ONLY=""
+ASSUME_YES="${ASSUME_YES:-0}"
+[[ -t 0 ]] || ASSUME_YES=1
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --only)   ONLY="${2:-}"; [[ -n "$ONLY" ]] || die "--only требует имя стадии"; shift 2 ;;
+        --yes|-y) ASSUME_YES=1; shift ;;
+        -h|--help)
+            cat <<EOF
+Использование: $0 [--only <stage>] [--yes]
+EOF
+            exit 0 ;;
+        *) die "Неизвестный аргумент: $1" ;;
+    esac
+done
+
+should_run() { [[ -z "$ONLY" || "$ONLY" == "$1" ]]; }
+
+VALID_STAGES=(
+    m4 ncurses bash coreutils diffutils file findutils
+    gawk grep gzip make patch sed tar xz
+    binutils-pass2 gcc-pass2
+)
+is_valid_stage() {
+    local s="$1" v
+    for v in "${VALID_STAGES[@]}"; do
+        [[ "$v" == "$s" ]] && return 0
+    done
+    return 1
+}
 
 extract() {
     cd "$SOURCES"
@@ -29,12 +61,31 @@ extract() {
 
 cleanup() { cd "$SOURCES"; rm -rf "$1"; ok "Очищен $1"; }
 
+# ФИКС: идемпотентные помощники
+safe_rm() { rm -fv -- "$@" 2>/dev/null || true; }
+safe_ln() { ln -sfv -- "$@"; }
+safe_mv() {
+    local src="$1" dst="$2"
+    [[ -e "$src" ]] || return 0
+    mkdir -p "$(dirname "$dst")"
+    mv -fv -- "$src" "$dst"
+}
+# /ФИКС
+
 check_prereq() {
     section "Проверка предусловий"
     [[ "$(whoami)" == "lfs" ]] || die "Запускать от имени 'lfs'"
-    [[ -n "${LFS:-}"     ]] || die "\$LFS не установлена"
-    [[ -n "${LFS_TGT:-}" ]] || die "\$LFS_TGT не установлена"
-    [[ -d "$LFS/tools"   ]] || die "$LFS/tools отсутствует (выполните Главу 5)"
+    [[ -n "${LFS_TGT:-}" ]]    || die "\$LFS_TGT не установлена"
+    [[ -d "$LFS/tools"   ]]    || die "$LFS/tools отсутствует (выполните Главу 5)"
+    if [[ -n "$(ls -A "$LFS/tools/bin" 2>/dev/null)" ]]; then
+        if [[ "$ASSUME_YES" == "1" ]]; then
+            warn "$LFS/tools/bin не пуст (ASSUME_YES=1 — продолжаем)"
+        else
+            warn "$LFS/tools/bin не пуст. Возможно, предыдущая сборка?"
+            read -rp 'Продолжить? [y/N] ' ans
+            [[ "$ans" =~ ^[yY]$ ]] || die "Отменено пользователем"
+        fi
+    fi
     ok "Предусловия выполнены"
 }
 
@@ -45,7 +96,7 @@ build_m4() {
     section "6.2 M4-1.4.21"
     extract "m4-1.4.21.tar.xz" "m4-1.4.21"
 
-    # config.site для gnulib/glibc-2.44
+    mkdir -p "$LFS/usr/share"   # ФИКС: гарантируем существование каталога
     cat > "$LFS/usr/share/config.site" << EOF
 ac_cv_func_posix_spawn_file_actions_addchdir=yes
 ac_cv_func_posix_spawn_file_actions_addfchdir=yes
@@ -67,12 +118,11 @@ build_ncurses() {
     section "6.3 Ncurses-6.6"
     extract "ncurses-6.6.tar.gz" "ncurses-6.6"
 
-    # Сборка tic на хосте и установка в $LFS/tools
     mkdir build && pushd build
     ../configure --prefix="$LFS/tools" AWK=gawk
     make -C include
     make -C progs tic
-    install progs/tic "$LFS/tools/bin"
+    install progs/tic "$LFS/tools/bin"   # install перезаписывает — ок
     popd
 
     ./configure --prefix=/usr \
@@ -89,7 +139,7 @@ build_ncurses() {
                 AWK=gawk
     make
     make DESTDIR="$LFS" install
-    ln -sv libncursesw.so "$LFS/usr/lib/libncurses.so"
+    safe_ln libncursesw.so "$LFS/usr/lib/libncurses.so"   # ФИКС: -f
     sed -e 's/^#if.*XOPEN.*$/#if 1/' -i "$LFS/usr/include/curses.h"
     ok "Ncurses установлен"
     cleanup "ncurses-6.6"
@@ -109,7 +159,7 @@ build_bash() {
                 --docdir=/usr/share/doc/bash-5.3
     make
     make DESTDIR="$LFS" install
-    ln -sv bash "$LFS/bin/sh"
+    safe_ln bash "$LFS/bin/sh"   # ФИКС: было ln -sv → теперь -sfv
     ok "Bash установлен"
     cleanup "bash-5.3"
 }
@@ -128,11 +178,12 @@ build_coreutils() {
     make
     make DESTDIR="$LFS" install
 
-    # Перемещение chroot в /usr/sbin
-    mv -v "$LFS/usr/bin/chroot"              "$LFS/usr/sbin"
-    mkdir -pv "$LFS/usr/share/man/man8"
-    mv -v "$LFS/usr/share/man/man1/chroot.1" "$LFS/usr/share/man/man8/chroot.8"
-    sed -i 's/"1"/"8"/' "$LFS/usr/share/man/man8/chroot.8"
+    # ФИКС: safe_mv — не падает, если файла уже нет / каталога не существует
+    safe_mv "$LFS/usr/bin/chroot"              "$LFS/usr/sbin/chroot"
+    safe_mv "$LFS/usr/share/man/man1/chroot.1" "$LFS/usr/share/man/man8/chroot.8"
+    [[ -f "$LFS/usr/share/man/man8/chroot.8" ]] && \
+        sed -i 's/"1"/"8"/' "$LFS/usr/share/man/man8/chroot.8" || true
+
     ok "Coreutils установлен"
     cleanup "coreutils-9.11"
 }
@@ -161,7 +212,6 @@ build_file() {
     section "6.7 File-5.48"
     extract "file-5.48.tar.gz" "file-5.48"
 
-    # Хостовая копия file для генерации сигнатур
     mkdir build && pushd build
     ../configure --disable-bzlib --disable-libseccomp --disable-xzlib --disable-zlib
     make
@@ -170,7 +220,7 @@ build_file() {
     ./configure --prefix=/usr --host="$LFS_TGT" --build="$(./config.guess)"
     make FILE_COMPILE="$(pwd)/build/src/file"
     make DESTDIR="$LFS" install
-    rm -v "$LFS/usr/lib/libmagic.la"
+    safe_rm "$LFS/usr/lib/libmagic.la"   # ФИКС: rm -fv + || true
     ok "File установлен"
     cleanup "file-5.48"
 }
@@ -307,7 +357,7 @@ build_xz() {
                 --docdir=/usr/share/doc/xz-5.8.3
     make
     make DESTDIR="$LFS" install
-    rm -v "$LFS/usr/lib/liblzma.la"
+    safe_rm "$LFS/usr/lib/liblzma.la"   # ФИКС
     ok "Xz установлен"
     cleanup "xz-5.8.3"
 }
@@ -319,7 +369,6 @@ build_binutils_pass2() {
     section "6.17 Binutils-2.47 — Pass 2"
     extract "binutils-2.47.tar.xz" "binutils-2.47"
 
-    # Обход несоответствия libtool
     sed '6031s/$add_dir//' -i ltmain.sh
 
     mkdir -v build && cd build
@@ -336,7 +385,7 @@ build_binutils_pass2() {
     make
     make DESTDIR="$LFS" install
 
-    rm -v "$LFS"/usr/lib/lib{bfd,ctf,ctf-nobfd,opcodes,sframe}.{a,la}
+    safe_rm "$LFS"/usr/lib/lib{bfd,ctf,ctf-nobfd,opcodes,sframe}.{a,la}   # ФИКС
     ok "Binutils pass 2 установлен"
     cleanup "binutils-2.47"
 }
@@ -348,19 +397,16 @@ build_gcc_pass2() {
     section "6.18 GCC-16.2.0 — Pass 2"
     extract "gcc-16.2.0.tar.xz" "gcc-16.2.0"
 
-    # GMP/MPFR/MPC
     tar -xf ../mpfr-4.2.2.tar.xz && mv -v mpfr-4.2.2 mpfr
     tar -xf ../gmp-6.3.0.tar.xz  && mv -v gmp-6.3.0  gmp
     tar -xf ../mpc-1.4.1.tar.xz  && mv -v mpc-1.4.1  mpc
 
-    # На x86_64 — lib вместо lib64
     if [[ "$(uname -m)" == "x86_64" ]]; then
         sed -e '/m64=/s/lib64/lib/' -i.orig gcc/config/i386/t-linux64
     fi
 
     mkdir -v build && cd build
 
-    # Снять переменные оптимизации
     unset CFLAGS CXXFLAGS LDFLAGS 2>/dev/null || true
 
     ../configure --build="$(../config.guess)" \
@@ -385,7 +431,7 @@ build_gcc_pass2() {
                  target_configargs=gcc_cv_target_thread_file=posix
     make
     make DESTDIR="$LFS" install
-    ln -sv gcc "$LFS/usr/bin/cc"
+    safe_ln gcc "$LFS/usr/bin/cc"   # ФИКС
     ok "GCC pass 2 установлен"
     cleanup "gcc-16.2.0"
 }
@@ -393,30 +439,41 @@ build_gcc_pass2() {
 # ============================================================
 main() {
     echo "###### LFS Глава 6 — Начало: $(date) ######"
+
+    if [[ -n "$ONLY" ]]; then
+        if ! is_valid_stage "$ONLY"; then
+            die "Стадия '$ONLY' не существует. Допустимые: ${VALID_STAGES[*]}"
+        fi
+        echo ">>> Режим --only: будет выполнена только стадия '$ONLY'"
+    fi
+
     check_prereq
 
-    build_m4
-    build_ncurses
-    build_bash
-    build_coreutils
-    build_diffutils
-    build_file
-    build_findutils
-    build_gawk
-    build_grep
-    build_gzip
-    build_make
-    build_patch
-    build_sed
-    build_tar
-    build_xz
-    build_binutils_pass2
-    build_gcc_pass2
+    should_run m4            && build_m4
+    should_run ncurses       && build_ncurses
+    should_run bash          && build_bash
+    should_run coreutils     && build_coreutils
+    should_run diffutils     && build_diffutils
+    should_run file          && build_file
+    should_run findutils     && build_findutils
+    should_run gawk          && build_gawk
+    should_run grep          && build_grep
+    should_run gzip          && build_gzip
+    should_run make          && build_make
+    should_run patch         && build_patch
+    should_run sed           && build_sed
+    should_run tar           && build_tar
+    should_run xz            && build_xz
+    should_run binutils-pass2 && build_binutils_pass2
+    should_run gcc-pass2     && build_gcc_pass2
 
-    section "Глава 6 завершена"
-    echo "Инструменты в $LFS/tools/bin:"
-    ls -1 "$LFS/tools/bin" | head -20
-    ok "Все пакеты Главы 6 установлены. Логи в $LOG_DIR/"
+    if [[ -z "$ONLY" ]]; then
+        section "Глава 6 завершена"
+        echo "Инструменты в $LFS/tools/bin:"
+        ls -1 "$LFS/tools/bin" | head -20
+        ok "Все пакеты Главы 6 установлены. Логи в $LOG_DIR/"
+    fi
 }
+
 main "$@" 2>&1 | tee "$LOG_DIR/chapter6-$TS.log"
 exit "${PIPESTATUS[0]}"

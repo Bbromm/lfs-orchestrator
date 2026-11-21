@@ -47,6 +47,23 @@
   .progress > div { height: 100%; background: linear-gradient(90deg, var(--accent), var(--green));
                     transition: width 0.5s; }
   .build-id { font-family: monospace; color: var(--muted); }
+
+  .settings { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+              gap: 14px; margin-top: 10px; }
+  .sgroup { background: var(--bg2); border-radius: 8px; padding: 14px; }
+  .sgroup h4 { margin: 0 0 10px 0; color: var(--purple); font-size: 0.9em;
+               text-transform: uppercase; letter-spacing: 0.04em; }
+  .row { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+  .row > span { flex: 0 0 108px; font-size: 0.85em; color: var(--muted); }
+  .row input, .row select { flex: 1; min-width: 0; background: var(--bg);
+              color: var(--fg); border: 1px solid #45475a; border-radius: 5px;
+              padding: 6px 8px; font-size: 0.9em; }
+  .row input:focus, .row select:focus { outline: 1px solid var(--accent); }
+  .check { display: flex; align-items: center; gap: 8px; margin-bottom: 7px;
+           font-size: 0.9em; cursor: pointer; }
+  .hint { font-size: 0.75em; color: var(--muted); margin-top: 6px; }
+  .sactions { grid-column: 1 / -1; display: flex; align-items: center; gap: 12px; }
+  .hidden { display: none !important; }
 </style>
 </head>
 <body>
@@ -55,6 +72,7 @@
 
 <div class="toolbar">
   <button id="start-btn">▶ Запустить сборку</button>
+  <button id="rebuild-btn" class="warn">⟲ Пересобрать всё</button>
   <button id="pause-btn" class="warn" disabled>⏸ Пауза</button>
   <button id="resume-btn" class="warn" disabled>▶ Возобновить</button>
   <button id="stop-btn" class="danger" disabled>⏹ Остановить</button>
@@ -64,6 +82,7 @@
 <div class="toolbar">
   <div class="stat">Задач: <b id="stat-total">0</b></div>
   <div class="stat">Готово: <b id="stat-done">0</b></div>
+  <div class="stat">Пропущено: <b id="stat-skipped">0</b></div>
   <div class="stat">Провалено: <b id="stat-failed">0</b></div>
   <div class="stat">Прогресс: <b id="stat-progress">0%</b></div>
 </div>
@@ -71,6 +90,88 @@
 <div class="progress"><div id="progress-bar" style="width:0%"></div></div>
 
 <div class="grid phases" id="phases"></div>
+
+<h3>⚙ Настройки перед сборкой <span id="settings-state" class="build-id"></span></h3>
+<div class="settings" id="settings-panel">
+  <div class="sgroup">
+    <h4>Сеть</h4>
+    <label class="row">
+      <span>Режим</span>
+      <select id="set-net-mode">
+        <option value="dhcp">Автоматически (DHCP)</option>
+        <option value="static">Задать вручную</option>
+      </select>
+    </label>
+    <label class="row"><span>Интерфейс</span>
+      <input id="set-iface" placeholder="автоопределение"></label>
+    <label class="row static-only"><span>IP-адрес</span>
+      <input id="set-ip" placeholder="192.168.1.100"></label>
+    <label class="row static-only"><span>Префикс</span>
+      <input id="set-prefix" type="number" min="1" max="32" value="24"></label>
+    <label class="row static-only"><span>Шлюз</span>
+      <input id="set-gateway" placeholder="192.168.1.1"></label>
+    <label class="row static-only"><span>DNS 1</span>
+      <input id="set-dns1" placeholder="8.8.8.8"></label>
+    <label class="row static-only"><span>DNS 2</span>
+      <input id="set-dns2" placeholder="8.8.4.4"></label>
+  </div>
+
+  <div class="sgroup">
+    <h4>Система</h4>
+    <label class="row"><span>Имя машины</span>
+      <input id="set-hostname" placeholder="lfs"></label>
+    <label class="row"><span>Часовой пояс</span>
+      <input id="set-timezone" placeholder="Asia/Yekaterinburg"></label>
+    <label class="row"><span>Локаль</span>
+      <input id="set-locale" placeholder="ru_RU.UTF-8"></label>
+    <label class="row"><span>Раскладка</span>
+      <input id="set-keymap" placeholder="ru"></label>
+  </div>
+
+  <div class="sgroup">
+    <h4>Загрузка</h4>
+    <label class="row"><span>Режим</span>
+      <select id="set-boot-mode">
+        <option value="auto">Автоопределение</option>
+        <option value="uefi">UEFI</option>
+        <option value="bios">BIOS (MBR)</option>
+      </select>
+    </label>
+    <label class="row"><span>Диск для GRUB</span>
+      <input id="set-boot-disk" placeholder="авто, например /dev/sda"></label>
+    <label class="row esp-only"><span>Раздел ESP</span>
+      <input id="set-boot-esp" placeholder="авто, например /dev/sda1"></label>
+    <label class="row"><span>Таймаут меню</span>
+      <input id="set-boot-timeout" type="number" min="0" max="60" value="5"></label>
+    <div class="hint">На реальной машине с двумя дисками или чужой ESP
+      укажите диск и раздел явно.</div>
+  </div>
+
+  <div class="sgroup">
+    <h4>Пользователь</h4>
+    <label class="row"><span>Имя</span>
+      <input id="set-user" placeholder="пусто — не создавать"></label>
+    <label class="row"><span>Пароль</span>
+      <input id="set-password" type="password" placeholder="оставьте пустым, чтобы не менять"></label>
+    <label class="row"><span>Группы</span>
+      <input id="set-groups" placeholder="wheel,audio,video,input,cdrom"></label>
+  </div>
+
+  <div class="sgroup">
+    <h4>Что доустановить после базы</h4>
+    <label class="check"><input type="checkbox" id="set-nix"> Nix (пакетный менеджер)</label>
+    <label class="check"><input type="checkbox" id="set-ssh"> SSH-сервер (openssh)</label>
+    <label class="check"><input type="checkbox" id="set-sudo"> sudo</label>
+    <label class="check"><input type="checkbox" id="set-pam"> Linux-PAM (+ пересборка systemd)</label>
+    <label class="check"><input type="checkbox" id="set-xfce"> Графическая оболочка XFCE</label>
+    <div class="hint">Ставится после успешной сборки базы, в фазе 12.</div>
+  </div>
+
+  <div class="sactions">
+    <button id="settings-save">💾 Сохранить настройки</button>
+    <span id="settings-msg" class="build-id"></span>
+  </div>
+</div>
 
 <h3>Live-логи</h3>
 <div class="log" id="log"></div>

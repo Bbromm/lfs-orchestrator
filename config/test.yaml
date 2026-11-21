@@ -6,7 +6,7 @@ defaults:
   env:
     LFS: /mnt/lfs
     LFS_TGT: x86_64-lfs-linux-gnu
-    PATH: "/mnt/lfs/tools/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+    PATH: /mnt/lfs/tools/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 phases:
   phase5:
     name: Глава 5 — Кросс-инструментарий
@@ -208,7 +208,7 @@ phases:
       extra-tools:
         script: scripts/install-chapter7.sh
         args:
-        - --only-phase-b
+        - --phase-b
         deps:
         - phase7/chroot-setup
         sbu_estimate: 3.0
@@ -567,7 +567,6 @@ phases:
         - kmod
         deps:
         - phase8/zstd
-        - openssl
         sbu_estimate: 0.1
       systemd:
         script: scripts/install-chapter8.sh
@@ -578,9 +577,7 @@ phases:
         - phase8/kmod
         - phase8/jinja2
         - phase8/meson
-        - openssl
         - phase8/pcre2
-        - util-linux
         sbu_estimate: 1.2
       dbus:
         script: scripts/install-chapter8.sh
@@ -589,7 +586,6 @@ phases:
         - dbus
         deps:
         - phase8/systemd
-        - util-linux
         sbu_estimate: 0.1
   phase9:
     name: Глава 9 — Конфигурация системы

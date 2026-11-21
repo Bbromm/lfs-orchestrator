@@ -28,6 +28,8 @@ class Task:
     retries: int = 0
     sbu_estimate: float = 0.0
     phase: str = ""
+    # Исполнитель для этой задачи: "" — взять общий из настроек
+    executor: str = ""
 
     # Runtime state
     state: TaskState = TaskState.PENDING

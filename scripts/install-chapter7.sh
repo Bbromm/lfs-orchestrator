@@ -1,22 +1,14 @@
 #!/bin/bash
 ###############################################################################
 # LFS 13.1-systemd — Глава 7: Chroot и временные инструменты
-# Скрипт состоит из двух фаз:
-#   Фаза A (вне chroot, root): разделы 7.2–7.4, вход в chroot
-#   Фаза B (внутри chroot, root): разделы 7.5–7.14
 #
-# Использование:
-#   1) От root: bash install-chapter7.sh --phase-a
-#   2) (Скрипт сам выполнит chroot и вызовет фазу B внутри)
+# Фаза A (вне chroot, root): 7.2–7.4 + вход в chroot
+# Фаза B (внутри chroot, root): 7.5–7.14
+#
+# Запуск:
+#   sudo bash install-chapter7.sh --phase-a
 ###############################################################################
 set -euo pipefail
-
-LFS="${LFS:-/mnt/lfs}"
-LFS_TGT="${LFS_TGT:-$(uname -m)-lfs-linux-gnu}"
-SOURCES="$LFS/sources"
-LOG_DIR="$SOURCES/logs"
-mkdir -p "$LOG_DIR"
-TS="$(date +%Y%m%d-%H%M%S)"
 
 RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; BLUE='\033[0;34m'; NC='\033[0m'
 log()  { echo -e "${BLUE}[$(date +%H:%M:%S)]${NC} $*"; }
@@ -25,76 +17,111 @@ warn() { echo -e "${YELLOW}[WARN]${NC} $*"; }
 die()  { echo -e "${RED}[ERROR]${NC} $*" >&2; exit 1; }
 section() { echo; echo "==================================================================="; echo "  $*"; echo "==================================================================="; echo; }
 
-extract() { cd "$SOURCES"; rm -rf "$2"; tar -xf "$1"; cd "$2"; }
-cleanup() { cd "$SOURCES"; rm -rf "$1"; ok "Очищен $1"; }
+safe_ln() { ln -sfv -- "$@"; }
 
 # ============================================================
-# ФАЗА A: Подготовка и вход в chroot (от root вне chroot)
+# ФАЗА A — Подготовка chroot (от root вне chroot)
 # ============================================================
 phase_a() {
-    section "Фаза A — Подготовка chroot"
-    [[ "$(id -u)" == "0" ]] || die "Фаза A должна запускаться от root"
-    [[ -n "${LFS:-}" ]] || die "\$LFS не установлена"
+    LFS="${LFS:-/mnt/lfs}"
+    LFS_TGT="${LFS_TGT:-$(uname -m)-lfs-linux-gnu}"
 
-    # 7.2 Changing Ownership
+    section "Фаза A — Подготовка chroot"
+
+    [[ "$(id -u)" == "0" ]]   || die "Фаза A должна запускаться от root"
+    [[ -d "$LFS"         ]]   || die "$LFS не существует"
+    [[ -d "$LFS/tools"   ]]   || die "$LFS/tools отсутствует (выполните Главу 5)"
+    [[ -d "$LFS/sources" ]]   || die "$LFS/sources отсутствует"
+
     log "7.2 Смена владельца..."
     chown --from lfs -R root:root "$LFS"/{usr,var,etc,tools}
     case "$(uname -m)" in
-        x86_64) chown --from lfs -R root:root "$LFS/lib64" ;;
+        x86_64) [[ -e "$LFS/lib64" ]] && chown --from lfs -R root:root "$LFS/lib64" ;;
     esac
     ok "Владелец изменён на root"
 
-    # 7.3 Preparing Virtual Kernel File Systems
     log "7.3 Создание каталогов для виртуальных ФС..."
     mkdir -pv "$LFS"/{dev,proc,sys,run}
 
-    log "7.3.1 Bind-mount /dev..."
-    mount -v --bind /dev "$LFS/dev"
+    # ФИКС: не монтируем повторно
+    if ! mountpoint -q "$LFS/dev"; then
+        log "7.3.1 Bind-mount /dev..."
+        mount -v --bind /dev "$LFS/dev"
+    else
+        warn "$LFS/dev уже смонтирован — пропускаем"
+    fi
 
     log "7.3.2 Монтирование виртуальных ФС..."
-    mount -vt devpts devpts -o gid=5,mode=0620 "$LFS/dev/pts"
-    mount -vt proc proc "$LFS/proc"
-    mount -vt sysfs sysfs "$LFS/sys"
-    mount -vt tmpfs tmpfs "$LFS/run"
+    mountpoint -q "$LFS/dev/pts" || mount -vt devpts devpts -o gid=5,mode=0620 "$LFS/dev/pts"
+    mountpoint -q "$LFS/proc"    || mount -vt proc proc "$LFS/proc"
+    mountpoint -q "$LFS/sys"     || mount -vt sysfs sysfs "$LFS/sys"
+    mountpoint -q "$LFS/run"     || mount -vt tmpfs tmpfs "$LFS/run"
 
-    if [ -h "$LFS/dev/shm" ]; then
+    if [[ -h "$LFS/dev/shm" ]]; then
         install -v -d -m 1777 "$LFS$(realpath /dev/shm)"
     else
-        mount -vt tmpfs -o nosuid,nodev tmpfs "$LFS/dev/shm"
+        mountpoint -q "$LFS/dev/shm" || mount -vt tmpfs -o nosuid,nodev tmpfs "$LFS/dev/shm"
     fi
     ok "Виртуальные ФС смонтированы"
 
-    # 7.4 Entering Chroot
     section "Фаза A — Вход в chroot и запуск фазы B"
-    log "Копирование фазы B в chroot..."
-    cp -v "$0" "$LFS/install-chapter7-phaseB.sh"
-    chmod +x "$LFS/install-chapter7-phaseB.sh"
+
+    # ФИКС: абсолютный путь к самому себе — чтобы cp работал при любом cwd
+    local SELF
+    SELF="$(readlink -f "$0" 2>/dev/null || realpath "$0")"
+    [[ -f "$SELF" ]] || die "Не удалось определить путь к скрипту (был вызван как: $0)"
+
+    log "Копирование скрипта в chroot: $SELF → $LFS/install-chapter7-phaseB.sh"
+    install -v -m 0755 "$SELF" "$LFS/install-chapter7-phaseB.sh"
 
     log "Вход в chroot и выполнение фазы B..."
+    # ФИКС #1: передаём аргумент --phase-b
+    # ФИКС #2: НЕ передаём LFS=/mnt/lfs — внутри chroot корень это /
+    # ФИКС #2: SOURCES=/sources — исходники внутри chroot лежат там
     chroot "$LFS" /usr/bin/env -i \
         HOME=/root \
-        TERM="$TERM" \
+        TERM="${TERM:-linux}" \
         PS1='(lfs chroot) \u:\w\$ ' \
         PATH=/usr/bin:/usr/sbin \
         MAKEFLAGS="-j$(nproc)" \
         TESTSUITEFLAGS="-j$(nproc)" \
-        LFS="$LFS" \
         LFS_TGT="$LFS_TGT" \
-        /bin/bash --login -c "bash /install-chapter7-phaseB.sh"
+        SOURCES="/sources" \
+        /bin/bash /install-chapter7-phaseB.sh --phase-b
 
     ok "Фаза A завершена. Chroot-сессия закрыта."
 }
 
 # ============================================================
-# ФАЗА B: Внутри chroot (от root)
+# ФАЗА B — Внутри chroot (от root)
 # ============================================================
 phase_b() {
+    local LFS_TGT="${LFS_TGT:-$(uname -m)-lfs-linux-gnu}"
+
+    # ФИКС: определяем SOURCES внутри chroot (/sources — стандарт LFS)
+    local SOURCES="${SOURCES:-}"
+    if [[ -z "$SOURCES" ]]; then
+        for d in /sources /mnt/lfs/sources; do
+            [[ -d "$d" ]] && { SOURCES="$d"; break; }
+        done
+    fi
+
     section "Фаза B — Установка временных инструментов (внутри chroot)"
 
-    [[ "$(id -u)" == "0" ]] || die "Фаза B должна запускаться от root"
-    [[ -d /usr/bin ]] || die "Не в chroot-среде (нет /usr/bin)"
+    [[ "$(id -u)" == "0"   ]] || die "Фаза B должна запускаться от root"
+    [[ -d /usr/bin         ]] || die "Не в chroot-среде (нет /usr/bin)"
+    [[ -n "$SOURCES" && -d "$SOURCES" ]] || die "Не найден каталог с исходниками (проверьте /sources)"
 
-    # 7.5 Creating Directories
+    extract() {
+        cd "$SOURCES"
+        [[ -f "$1" ]] || die "Не найден архив: $SOURCES/$1"
+        rm -rf "$2"
+        tar -xf "$1" || die "Не удалось извлечь $1"
+        cd "$2"
+    }
+    cleanup() { cd "$SOURCES"; rm -rf "$1"; ok "Очищен $1"; }
+
+    # ---------- 7.5 ----------
     log "7.5 Создание каталогов..."
     mkdir -pv /{boot,home,mnt,opt,srv}
     mkdir -pv /etc/{opt,sysconfig}
@@ -108,15 +135,15 @@ phase_b() {
     mkdir -pv /usr/{,local/}share/man/man{1..8}
     mkdir -pv /var/{cache,local,log,mail,opt,spool}
     mkdir -pv /var/lib/{color,misc,locate}
-    ln -sfv /run /var/run
-    ln -sfv /run/lock /var/lock
+    safe_ln /run /var/run
+    safe_ln /run/lock /var/lock
     install -dv -m 0750 /root
     install -dv -m 1777 /tmp /var/tmp
     ok "Каталоги созданы"
 
-    # 7.6 Creating Essential Files and Symlinks
+    # ---------- 7.6 ----------
     log "7.6 Создание основных файлов и симлинков..."
-    ln -sv /proc/self/mounts /etc/mtab
+    safe_ln /proc/self/mounts /etc/mtab
 
     cat > /etc/hosts << EOF
 127.0.0.1  localhost $(hostname)
@@ -177,19 +204,19 @@ users:x:999:
 nogroup:x:65534:
 EOF
 
-    echo "tester:x:101:101::/home/tester:/bin/bash" >> /etc/passwd
-    echo "tester:x:101:" >> /etc/group
+    # ФИКС: не создаём дубликаты при повторном запуске
+    grep -q '^tester:' /etc/passwd || echo "tester:x:101:101::/home/tester:/bin/bash" >> /etc/passwd
+    grep -q '^tester:' /etc/group  || echo "tester:x:101:" >> /etc/group
     install -o tester -d /home/tester
 
-    exec /usr/bin/bash --login << 'EOSH'
-touch /var/log/{btmp,lastlog,faillog,wtmp}
-chgrp -v utmp /var/log/lastlog
-chmod -v 664  /var/log/lastlog
-chmod -v 600  /var/log/btmp
-EOSH
+    # ФИКС: без exec и без subshell — иначе родительский скрипт умирает
+    touch /var/log/{btmp,lastlog,faillog,wtmp}
+    chgrp -v utmp /var/log/lastlog
+    chmod -v 664  /var/log/lastlog
+    chmod -v 600  /var/log/btmp
     ok "Основные файлы созданы"
 
-    # 7.7 Gettext-1.0
+    # ---------- 7.7 ----------
     section "7.7 Gettext-1.0"
     extract "gettext-1.0.tar.xz" "gettext-1.0"
     ./configure --disable-shared
@@ -198,7 +225,7 @@ EOSH
     ok "Gettext установлен"
     cleanup "gettext-1.0"
 
-    # 7.8 Bison-3.8.2
+    # ---------- 7.8 ----------
     section "7.8 Bison-3.8.2"
     extract "bison-3.8.2.tar.xz" "bison-3.8.2"
     ./configure --prefix=/usr --docdir=/usr/share/doc/bison-3.8.2
@@ -207,7 +234,7 @@ EOSH
     ok "Bison установлен"
     cleanup "bison-3.8.2"
 
-    # 7.9 Perl-5.44.0
+    # ---------- 7.9 ----------
     section "7.9 Perl-5.44.0"
     extract "perl-5.44.0.tar.xz" "perl-5.44.0"
     sh Configure -des \
@@ -225,7 +252,7 @@ EOSH
     ok "Perl установлен"
     cleanup "perl-5.44.0"
 
-    # 7.10 Zlib-1.3.2
+    # ---------- 7.10 ----------
     section "7.10 Zlib-1.3.2"
     extract "zlib-1.3.2.tar.gz" "zlib-1.3.2"
     ./configure --prefix=/usr
@@ -235,7 +262,7 @@ EOSH
     ok "Zlib установлен"
     cleanup "zlib-1.3.2"
 
-    # 7.11 mpdecimal-4.0.1
+    # ---------- 7.11 ----------
     section "7.11 mpdecimal-4.0.1"
     extract "mpdecimal-4.0.1.tar.gz" "mpdecimal-4.0.1"
     ./configure --prefix=/usr --disable-static --docdir=/usr/share/doc/mpdecimal-4.0.1
@@ -244,7 +271,7 @@ EOSH
     ok "mpdecimal установлен"
     cleanup "mpdecimal-4.0.1"
 
-    # 7.12 Python-3.14.7
+    # ---------- 7.12 ----------
     section "7.12 Python-3.14.7"
     extract "Python-3.14.7.tar.xz" "Python-3.14.7"
     ./configure --prefix=/usr --enable-shared --without-ensurepip --without-static-libpython
@@ -253,7 +280,7 @@ EOSH
     ok "Python установлен"
     cleanup "Python-3.14.7"
 
-    # 7.13 Texinfo-7.3
+    # ---------- 7.13 ----------
     section "7.13 Texinfo-7.3"
     extract "texinfo-7.3.tar.xz" "texinfo-7.3"
     ./configure --prefix=/usr
@@ -262,7 +289,7 @@ EOSH
     ok "Texinfo установлен"
     cleanup "texinfo-7.3"
 
-    # 7.14 Util-linux-2.42.2
+    # ---------- 7.14 ----------
     section "7.14 Util-linux-2.42.2"
     extract "util-linux-2.42.2.tar.xz" "util-linux-2.42.2"
     mkdir -pv /var/lib/hwclock

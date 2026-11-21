@@ -48,7 +48,7 @@ def load_tasks_config(yaml_path: str | Path) -> tuple[dict[str, dict], dict[str,
     Загружает YAML с фазами/задачами.
     Возвращает (tasks_by_phase, defaults).
     """
-    with open(yaml_path) as f:
+    with open(yaml_path, encoding="utf-8") as f:
         data = yaml.safe_load(f)
 
     defaults = data.get("defaults", {})
@@ -68,6 +68,8 @@ def load_tasks_config(yaml_path: str | Path) -> tuple[dict[str, dict], dict[str,
                 timeout=task_cfg.get("timeout", defaults.get("timeout", 7200)),
                 retries=task_cfg.get("retries", defaults.get("retries", 0)),
                 sbu_estimate=task_cfg.get("sbu_estimate", 0.0),
+                # исполнитель: задача → фаза → пусто (общий из настроек)
+                executor=task_cfg.get("executor", phase_cfg.get("executor", "")),
             ))
         parsed_phases[phase_name] = {
             "name": phase_cfg.get("name", phase_name),
