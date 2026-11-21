@@ -80,6 +80,29 @@ run() {
     "$@"
 }
 
+# Проверка «URL отвечает по HTTP». curl есть не везде (на чистом Debian его
+# может не быть), поэтому пробуем curl → wget → python из venv. Раньше здесь
+# был только curl, и при его отсутствии исправно поднявшийся оркестратор
+# объявлялся «не отвечающим».
+http_ok() {
+    local url="$1"
+    if command -v curl >/dev/null 2>&1; then
+        curl -fsS -o /dev/null --max-time 3 "$url" 2>/dev/null
+    elif command -v wget >/dev/null 2>&1; then
+        wget -q -O /dev/null -T 3 "$url" 2>/dev/null
+    elif [[ -x .venv/bin/python ]]; then
+        .venv/bin/python - "$url" >/dev/null 2>&1 <<'PY'
+import sys, urllib.request
+try:
+    urllib.request.urlopen(sys.argv[1], timeout=3)
+except Exception:
+    sys.exit(1)
+PY
+    else
+        return 1
+    fi
+}
+
 confirm() {
     local prompt="$1" answer
     (( ASSUME_YES )) && return 0
@@ -652,19 +675,51 @@ else
     info "venv уже есть"
 fi
 
-if [[ -x ".venv/bin/pip" ]] && (( ! DRY_RUN )); then
-    if ! .venv/bin/python -c "import fastapi, uvicorn, pydantic_settings, yaml, typer, aiosqlite" 2>/dev/null; then
-        info "ставлю зависимости…"
-        .venv/bin/pip install -q --upgrade pip >/dev/null 2>&1 || true
-        if .venv/bin/pip install -q -r requirements.txt >/tmp/pip.log 2>&1; then
-            ok "зависимости установлены"
-        else
-            err "pip install не удался:"
-            tail -15 /tmp/pip.log | sed 's/^/       /'
-            die "проверьте requirements.txt"
+# Проверяем не наличие файла pip, а работоспособность окружения: venv мог
+# остаться недоделанным (каталог есть, pip и site-packages пустые) — тогда
+# проверка «-x .venv/bin/pip» молча пропускала установку зависимостей, и
+# оркестратор падал на «No module named uvicorn».
+VENV_IMPORTS="import fastapi, uvicorn, pydantic_settings, yaml, typer, aiosqlite"
+venv_ready() { [[ -x .venv/bin/python ]] && .venv/bin/python -c "$VENV_IMPORTS" >/dev/null 2>&1; }
+
+if (( DRY_RUN )); then
+    :
+elif venv_ready; then
+    ok "зависимости на месте"
+else
+    if [[ -d .venv ]]; then
+        info "venv неполный — пересоздаю"
+        rm -rf .venv
+        python3 -m venv .venv 2>/tmp/venv.err || {
+            err "не удалось создать venv:"
+            sed 's/^/       /' /tmp/venv.err
+            die "установите: apt install python3-venv"
+        }
+        ok "venv создан"
+    fi
+
+    if [[ ! -x .venv/bin/pip ]]; then
+        info "pip отсутствует — ставлю через ensurepip"
+        if ! .venv/bin/python -m ensurepip --upgrade >/tmp/venv.err 2>&1; then
+            err "ensurepip не сработал:"
+            sed 's/^/       /' /tmp/venv.err
+            die "установите: apt install python3-venv"
         fi
+    fi
+
+    info "ставлю зависимости…"
+    .venv/bin/pip install -q --upgrade pip >/dev/null 2>&1 || true
+    if ! .venv/bin/pip install -q -r requirements.txt >/tmp/pip.log 2>&1; then
+        err "pip install не удался:"
+        tail -15 /tmp/pip.log | sed 's/^/       /'
+        die "проверьте requirements.txt"
+    fi
+    if venv_ready; then
+        ok "зависимости установлены"
     else
-        ok "зависимости на месте"
+        err "модули не импортируются после установки:"
+        .venv/bin/python -c "$VENV_IMPORTS" 2>&1 | tail -5 | sed 's/^/       /'
+        die "проверьте requirements.txt"
     fi
 fi
 
@@ -673,23 +728,33 @@ step "Файл настроек .env"
 if [[ -f .env ]]; then
     info ".env уже существует — не трогаю"
     info "исполнитель из .env: $EXECUTOR"
+    # .env от старых версий скрипта содержал ORCH_*/MAX_PARALLEL — такие имена
+    # pydantic игнорирует, и настройки молча брались по умолчанию.
+    if grep -qE '^(ORCH_|MAX_PARALLEL=|RUN_TESTS=|STOP_ON_ERROR=|LFS=)' .env 2>/dev/null; then
+        warn ".env содержит переменные без префикса LFS_ — они игнорируются"
+        warn "правильные имена: LFS_ROOT, LFS_DB_PATH, LFS_LOGS_DIR, LFS_MAX_PARALLEL (см. .env.example)"
+    fi
 else
     if (( DRY_RUN )); then
         info "dry-run: .env не создаётся"
     else
         cat > .env <<EOF
 # Сгенерировано prepare-and-run.sh $(date '+%Y-%m-%d %H:%M:%S')
-LFS=$LFS
+# ВАЖНО: pydantic читает настройки с префиксом LFS_ (env_prefix="LFS_"),
+# поэтому нужны LFS_ROOT, LFS_DB_PATH, LFS_MAX_PARALLEL и т.д.
+# Голые имена (DB_PATH=, MAX_PARALLEL=) молча игнорируются.
+LFS_ROOT=$LFS
 LFS_SOURCES=$LFS/sources
 LFS_TGT=$LFS_TGT
 LFS_EXECUTOR=$EXECUTOR
-ORCHESTRATOR_PORT=$PORT
-ORCH_LOG_LEVEL=INFO
-ORCH_DB_PATH=$SCRIPT_DIR/data/orchestrator.db
-ORCH_LOGS_DIR=$SCRIPT_DIR/logs
-MAX_PARALLEL=1
-RUN_TESTS=false
-STOP_ON_ERROR=true
+LFS_ORCH_HOST=0.0.0.0
+LFS_ORCH_PORT=$PORT
+LFS_ORCH_LOG_LEVEL=INFO
+LFS_DB_PATH=$SCRIPT_DIR/data/orchestrator.db
+LFS_LOGS_DIR=$SCRIPT_DIR/logs
+LFS_MAX_PARALLEL=1
+LFS_RUN_TESTS=false
+LFS_STOP_ON_ERROR=true
 EOF
         ok ".env создан (исполнитель: $EXECUTOR)"
     fi
@@ -760,7 +825,7 @@ if (( DO_RUN )); then
         ready=0
         for _ in $(seq 1 20); do
             sleep 1
-            if curl -fsS -o /dev/null "http://127.0.0.1:$PORT/" 2>/dev/null; then
+            if http_ok "http://127.0.0.1:$PORT/"; then
                 ready=1
                 break
             fi
