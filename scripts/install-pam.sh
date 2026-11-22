@@ -257,7 +257,7 @@ rebuild_systemd() {
 
     # Флаги повторяют главу 8 один в один, изменён только pamconfdir.
     mkdir -p build && cd build || return 1
-    meson setup .. --prefix=/usr --buildtype=release \
+    meson setup .. --prefix=/usr --libdir=/usr/lib --buildtype=release \
         -D default-dnssec=no -D firstboot=false -D install-tests=false \
         -D ldconfig=false -D sysusers=false -D rpmmacrosdir=no \
         -D homed=disabled -D man=disabled -D mode=release -D pamconfdir=/etc/pam.d \

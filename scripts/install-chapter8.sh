@@ -498,7 +498,9 @@ pkg_pkgconf() {
     rm -rf meson-1.12.0
     tar -xf ../meson-1.12.0.tar.gz
     mkdir build && cd build
-    python3 ../meson-1.12.0/meson.py setup --prefix=/usr --buildtype=release ..
+    python3 ../meson-1.12.0/meson.py setup --prefix=/usr --buildtype=release \
+        --libdir=/usr/lib \
+        -Dwith-pkg-config-dir=/usr/lib/pkgconfig:/usr/share/pkgconfig ..
     ninja
     run_tests && ninja test || true
     ninja install
@@ -983,7 +985,7 @@ pkg_kmod() {
     section "8.60 Kmod-34.2"
     extract "kmod-34.2.tar.xz" "kmod-34.2"
     mkdir -p build && cd build
-    meson setup --prefix=/usr .. --buildtype=release -D manpages=false
+    meson setup --prefix=/usr --libdir=/usr/lib .. --buildtype=release -D manpages=false
     ninja
     ninja install
     ok "Kmod установлен"
@@ -1174,7 +1176,7 @@ pkg_systemd() {
     sed -e 's/GROUP="render"/GROUP="video"/' -e 's/GROUP="sgx", //' \
         -i rules.d/50-udev-default.rules.in
     mkdir -p build && cd build
-    meson setup .. --prefix=/usr --buildtype=release \
+    meson setup .. --prefix=/usr --libdir=/usr/lib --buildtype=release \
         -D default-dnssec=no -D firstboot=false -D install-tests=false \
         -D ldconfig=false -D sysusers=false -D rpmmacrosdir=no \
         -D homed=disabled -D man=disabled -D mode=release -D pamconfdir=no \
@@ -1200,7 +1202,7 @@ pkg_dbus() {
     section "8.78 D-Bus-1.16.2"
     extract "dbus-1.16.2.tar.xz" "dbus-1.16.2"
     mkdir build && cd build
-    meson setup --prefix=/usr --buildtype=release --wrap-mode=nofallback ..
+    meson setup --prefix=/usr --libdir=/usr/lib --buildtype=release --wrap-mode=nofallback ..
     ninja
     run_tests && ninja test || true
     ninja install
