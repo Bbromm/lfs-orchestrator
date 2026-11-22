@@ -328,7 +328,9 @@ EOF
 install_nix() {
     section "12.5 Nix"
 
-    export PATH="/nix/var/nix/profiles/default/bin:/usr/local/bin:/usr/bin:/bin"
+    # /usr/sbin и /sbin обязательны: здесь живут groupadd/useradd (shadow),
+    # а ниже по скрипту создаётся пользователь sshd для privsep.
+    export PATH="/nix/var/nix/profiles/default/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
     export NIX_SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt
     write_nix_profile
 
