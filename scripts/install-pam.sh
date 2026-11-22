@@ -233,6 +233,19 @@ session   required   pam_loginuid.so
 # End /etc/pam.d/systemd-user
 EOF
 
+    # shadow ставит свои login/su/passwd с упоминанием pam_selinux.so и
+    # pam_console.so. В LFS PAM собран без SELinux, а pam_console устарел,
+    # поэтому на каждый вход в журнал сыпалось «PAM unable to dlopen».
+    # Комментируем ссылки на модули, которых нет в системе.
+    local mod file
+    for mod in pam_selinux.so pam_console.so; do
+        [[ -f "/usr/lib/security/$mod" ]] && continue
+        for file in /etc/pam.d/*; do
+            [[ -f "$file" ]] || continue
+            sed -i "/$mod/s/^\([^#]\)/# \1/" "$file"
+        done
+    done
+
     ok "создано 8 файлов в /etc/pam.d"
 }
 
