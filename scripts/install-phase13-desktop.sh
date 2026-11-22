@@ -97,7 +97,7 @@ install_xorg() {
 
     nix_install_batch "сервер Xorg" \
         xorg.xorgserver xorg.xinit xorg.xauth xorg.xkeyboardconfig xorg.xkbcomp \
-        xorg.xf86inputlibinput xorg.xf86inputevdev xorg.xf86inputkeyboard \
+        xorg.xf86inputlibinput xorg.xf86inputevdev \
         xorg.xrandr xorg.xset xorg.xrdb xorg.xprop xorg.xmodmap \
         xorg.iceauth xorg.setxkbmap
 
@@ -428,12 +428,18 @@ EOF
 
     # polkit 127 ищет .policy в /etc/polkit-1/actions (плюс /run, /usr/local/share,
     # /run/current-system/sw), но не в /usr/share — туда копировать бесполезно.
+    # Берём политики из двух мест: свои у пакета polkit и системные от systemd
+    # (org.freedesktop.login1.policy — без неё кнопки питания не работают).
     install -d /etc/polkit-1/actions /etc/polkit-1/rules.d /run/polkit-1
-    if compgen -G "$prefix/share/polkit-1/actions/*.policy" >/dev/null 2>&1; then
-        cp -f "$prefix"/share/polkit-1/actions/*.policy /etc/polkit-1/actions/
+    for src in "$prefix/share/polkit-1/actions" /usr/share/polkit-1/actions /usr/local/share/polkit-1/actions; do
+        if compgen -G "$src/*.policy" >/dev/null 2>&1; then
+            cp -f "$src"/*.policy /etc/polkit-1/actions/
+        fi
+    done
+    if compgen -G "/etc/polkit-1/actions/*.policy" >/dev/null 2>&1; then
         ok "политики действий: $(ls /etc/polkit-1/actions | wc -l) файлов"
     else
-        warn "нет $prefix/share/polkit-1/actions/*.policy"
+        warn "не найдено ни одного .policy для /etc/polkit-1/actions"
     fi
     if [[ ! -f /etc/polkit-1/actions/org.freedesktop.login1.policy ]]; then
         warn "нет org.freedesktop.login1.policy — кнопки питания не появятся"
