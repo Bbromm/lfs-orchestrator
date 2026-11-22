@@ -314,8 +314,11 @@ def make_executor(kind: str, **kwargs) -> Executor:
     if kind == "local":
         return LocalExecutor(cwd=Path(kwargs.get("cwd", ".")), env=kwargs.get("env"))
     if kind in ("lfs", "unprivileged"):
+        # user из kwargs сюда не годится: там SSH-пользователь (обычно root).
+        # Главы 2–6 по книге собираются от пользователя lfs, и скрипты это
+        # проверяют (`whoami` == lfs), поэтому имя задаётся отдельно.
         return UnprivilegedExecutor(
-            user=kwargs.get("user", "lfs"),
+            user=kwargs.get("lfs_user") or "lfs",
             cwd=Path(kwargs.get("cwd", ".")),
             env=kwargs.get("env") or {},
         )

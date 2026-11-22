@@ -218,7 +218,8 @@ phases:
         args:
         - --only
         - man-pages
-        deps: []
+        deps:
+        - phase7/chroot-and-tools
         sbu_estimate: 0.1
       iana-etc:
         script: scripts/install-chapter8.sh

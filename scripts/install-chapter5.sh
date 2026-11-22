@@ -45,6 +45,10 @@ LOG_DIR="$LFS/sources/logs"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 MAIN_LOG="$LOG_DIR/chapter5-$TIMESTAMP.log"
 
+# Каталог логов нужен до запуска main: основной лог открывается через tee,
+# и при отсутствии каталога tee молча теряет весь вывод.
+mkdir -p "$LOG_DIR" 2>/dev/null || true
+
 # Цвета для вывода
 RED='\033[0;31m'
 GREEN='\033[0;32m'
