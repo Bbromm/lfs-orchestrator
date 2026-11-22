@@ -149,6 +149,15 @@ async def start_build(req: StartBuildRequest):
     if not requested:
         raise HTTPException(400, "Нет фаз для выполнения")
 
+    # Две сборки одновременно работать не могут: они пишут в один и тот же
+    # $LFS/sources и удаляют каталоги друг у друга (make теряет рабочий каталог).
+    if active_builds:
+        running = ", ".join(sorted(active_builds))
+        raise HTTPException(
+            409,
+            f"Уже идёт сборка ({running}). Остановите её и дождитесь завершения.",
+        )
+
     last = max(order.index(p) for p in requested)
     phases = order[: last + 1]
 

@@ -2,12 +2,52 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
 import shlex
+import signal
 from abc import ABC, abstractmethod
 from pathlib import Path
 
 from .task import Task
+
+
+async def _terminate_tree(proc: asyncio.subprocess.Process, grace: float = 5.0) -> None:
+    """Останавливает процесс вместе со всеми потомками.
+
+    Задачи запускаются в отдельной группе (start_new_session=True), поэтому
+    killpg достаёт всю цепочку: sudo → env → bash → make → cc1. Без этого
+    кнопка «Остановить» убивала только верхний sudo, а сборка продолжала
+    работать сиротами и ломала следующий запуск (make терял рабочий каталог).
+    """
+    if proc.returncode is not None:
+        return
+
+    if os.name == "nt":
+        # В Windows групп процессов через asyncio нет — снимаем дерево целиком.
+        with contextlib.suppress(Exception):
+            killer = await asyncio.create_subprocess_exec(
+                "taskkill", "/F", "/T", "/PID", str(proc.pid),
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await killer.wait()
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(proc.wait(), timeout=grace)
+        return
+
+    for sig in (signal.SIGTERM, signal.SIGKILL):
+        try:
+            os.killpg(proc.pid, sig)
+        except (ProcessLookupError, PermissionError):
+            return
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=grace)
+            return
+        except asyncio.TimeoutError:
+            continue
+    with contextlib.suppress(Exception):
+        await proc.wait()
 
 
 class Executor(ABC):
@@ -41,14 +81,17 @@ class LocalExecutor(Executor):
                 env=env,
                 stdout=log,
                 stderr=asyncio.subprocess.STDOUT,
+                start_new_session=True,
             )
             try:
                 return await asyncio.wait_for(proc.wait(), timeout=task.timeout)
             except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
+                await _terminate_tree(proc)
                 log.write(f"\n# TIMEOUT after {task.timeout}s\n".encode())
                 return 124  # conventional timeout exit code
+            except asyncio.CancelledError:
+                await _terminate_tree(proc)
+                raise
 
 
 class RootExecutor(Executor):
@@ -77,14 +120,17 @@ class RootExecutor(Executor):
                 cwd=str(self.cwd),
                 stdout=log,
                 stderr=asyncio.subprocess.STDOUT,
+                start_new_session=True,
             )
             try:
                 return await asyncio.wait_for(proc.wait(), timeout=task.timeout)
             except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
+                await _terminate_tree(proc)
                 log.write(f"\n# TIMEOUT after {task.timeout}s\n".encode())
                 return 124
+            except asyncio.CancelledError:
+                await _terminate_tree(proc)
+                raise
 
 
 class UnprivilegedExecutor(Executor):
@@ -121,14 +167,17 @@ class UnprivilegedExecutor(Executor):
                 *cmd,
                 stdout=log,
                 stderr=asyncio.subprocess.STDOUT,
+                start_new_session=True,
             )
             try:
                 return await asyncio.wait_for(proc.wait(), timeout=task.timeout)
             except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
+                await _terminate_tree(proc)
                 log.write(f"\n# TIMEOUT after {task.timeout}s\n".encode())
                 return 124
+            except asyncio.CancelledError:
+                await _terminate_tree(proc)
+                raise
 
 
 class ChrootExecutor(Executor):
@@ -165,13 +214,17 @@ class ChrootExecutor(Executor):
             log.flush()
             proc = await asyncio.create_subprocess_exec(
                 *cmd, stdout=log, stderr=asyncio.subprocess.STDOUT,
+                start_new_session=True,
             )
             try:
                 return await asyncio.wait_for(proc.wait(), timeout=task.timeout)
             except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
+                await _terminate_tree(proc)
+                log.write(f"\n# TIMEOUT after {task.timeout}s\n".encode())
                 return 124
+            except asyncio.CancelledError:
+                await _terminate_tree(proc)
+                raise
 
 
 class SSHExecutor(Executor):
@@ -200,13 +253,17 @@ class SSHExecutor(Executor):
             log.flush()
             proc = await asyncio.create_subprocess_exec(
                 *ssh_args, stdout=log, stderr=asyncio.subprocess.STDOUT,
+                start_new_session=True,
             )
             try:
                 return await asyncio.wait_for(proc.wait(), timeout=task.timeout)
             except asyncio.TimeoutError:
-                proc.kill()
-                await proc.wait()
+                await _terminate_tree(proc)
+                log.write(f"\n# TIMEOUT after {task.timeout}s\n".encode())
                 return 124
+            except asyncio.CancelledError:
+                await _terminate_tree(proc)
+                raise
 
 
 class DockerExecutor(Executor):

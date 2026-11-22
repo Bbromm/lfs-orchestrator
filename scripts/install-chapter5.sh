@@ -19,7 +19,9 @@
 
 # Строгий режим: выход при ошибке, при неинициализированной переменной,
 # при ошибке в конвейере
-#set -euo pipefail
+# Коды возврата конвейеров важны: `make ... | tee log` без pipefail
+# возвращает код tee, и провал сборки выглядел как успех.
+set -o pipefail
 CURRENT_STAGE=""
 cleanup_on_signal() {
     echo "[$(date)] Получен SIGTERM, прерываю стадию '$CURRENT_STAGE'..."
@@ -209,13 +211,13 @@ build_binutils_pass1() {
                  --disable-werror \
                  --enable-new-dtags \
                  --enable-default-hash-style=gnu \
-        2>&1 | tee "$LOG_DIR/binutils-pass1-configure.log"
+        2>&1 | tee "$LOG_DIR/binutils-pass1-configure.log" || die "ошибка, лог: $LOG_DIR/binutils-pass1-configure.log"
 
     log "make..."
-    make 2>&1 | tee "$LOG_DIR/binutils-pass1-make.log"
+    make 2>&1 | tee "$LOG_DIR/binutils-pass1-make.log" || die "ошибка, лог: $LOG_DIR/binutils-pass1-make.log"
 
     log "make install..."
-    make install 2>&1 | tee "$LOG_DIR/binutils-pass1-install.log"
+    make install 2>&1 | tee "$LOG_DIR/binutils-pass1-install.log" || die "ошибка, лог: $LOG_DIR/binutils-pass1-install.log"
 
     ok "Binutils pass 1 установлен"
 
@@ -271,19 +273,24 @@ build_gcc_pass1() {
                  --disable-libvtv \
                  --disable-libstdcxx \
                  --enable-languages=c,c++ \
-        2>&1 | tee "$LOG_DIR/gcc-pass1-configure.log"
+        2>&1 | tee "$LOG_DIR/gcc-pass1-configure.log" || die "ошибка, лог: $LOG_DIR/gcc-pass1-configure.log"
 
     log "make (это может занять несколько минут)..."
-    make 2>&1 | tee "$LOG_DIR/gcc-pass1-make.log"
+    make 2>&1 | tee "$LOG_DIR/gcc-pass1-make.log" || die "ошибка, лог: $LOG_DIR/gcc-pass1-make.log"
 
     log "make install..."
-    make install 2>&1 | tee "$LOG_DIR/gcc-pass1-install.log"
+    make install 2>&1 | tee "$LOG_DIR/gcc-pass1-install.log" || die "ошибка, лог: $LOG_DIR/gcc-pass1-install.log"
 
     # Создание полного internal limits.h
     log "Создание полного limits.h..."
-    cat ../gcc/limitx.h ../gcc/glimits.h ../gcc/limity.h > \
-        "$("$LFS_TGT-gcc" -print-file-name=include)/limits.h"
-    ok "limits.h создан"
+    local incdir
+    incdir="$("$LFS_TGT-gcc" -print-file-name=include 2>/dev/null)"
+    if [[ -z "$incdir" || ! -d "$incdir" ]]; then
+        die "кросс-gcc не установлен: не удалось получить каталог include"
+    fi
+    cat ../gcc/limitx.h ../gcc/glimits.h ../gcc/limity.h > "$incdir/limits.h" \
+        || die "не удалось записать $incdir/limits.h"
+    ok "limits.h создан: $incdir/limits.h"
 
     ok "GCC pass 1 установлен"
 
@@ -300,16 +307,16 @@ build_linux_headers() {
     extract "linux-7.1.8.tar.xz" "linux-7.1.8"
 
     log "make mrproper..."
-    make mrproper 2>&1 | tee "$LOG_DIR/linux-headers-mrproper.log"
+    make mrproper 2>&1 | tee "$LOG_DIR/linux-headers-mrproper.log" || die "ошибка, лог: $LOG_DIR/linux-headers-mrproper.log"
 
     log "make headers..."
-    make headers 2>&1 | tee "$LOG_DIR/linux-headers-make.log"
+    make headers 2>&1 | tee "$LOG_DIR/linux-headers-make.log" || die "ошибка, лог: $LOG_DIR/linux-headers-make.log"
 
     log "Удаление не-заголовочных файлов..."
     find usr/include -type f ! -name '*.h' -delete
 
     log "Копирование в $LFS/usr..."
-    cp -rv usr/include "$LFS/usr" 2>&1 | tee "$LOG_DIR/linux-headers-copy.log"
+    cp -rv usr/include "$LFS/usr" 2>&1 | tee "$LOG_DIR/linux-headers-copy.log" || die "ошибка, лог: $LOG_DIR/linux-headers-copy.log"
 
     ok "Заголовки API Linux установлены"
 
@@ -340,10 +347,10 @@ build_glibc() {
 
     # Патчи
     log "Применение glibc-fhs-1.patch..."
-    patch -Np1 -i ../glibc-fhs-1.patch 2>&1 | tee "$LOG_DIR/glibc-fhs-patch.log"
+    patch -Np1 -i ../glibc-fhs-1.patch 2>&1 | tee "$LOG_DIR/glibc-fhs-patch.log" || die "ошибка, лог: $LOG_DIR/glibc-fhs-patch.log"
 
     log "Применение glibc-2.44-upstream_fixes-1.patch..."
-    patch -Np1 -i ../glibc-2.44-upstream_fixes-1.patch 2>&1 | tee "$LOG_DIR/glibc-upstream-patch.log"
+    patch -Np1 -i ../glibc-2.44-upstream_fixes-1.patch 2>&1 | tee "$LOG_DIR/glibc-upstream-patch.log" || die "ошибка, лог: $LOG_DIR/glibc-upstream-patch.log"
 
     mkdir -v build && cd build
 
@@ -357,13 +364,13 @@ build_glibc() {
                  --disable-nscd \
                  libc_cv_slibdir=/usr/lib \
                  --enable-kernel=5.10 \
-        2>&1 | tee "$LOG_DIR/glibc-configure.log"
+        2>&1 | tee "$LOG_DIR/glibc-configure.log" || die "ошибка, лог: $LOG_DIR/glibc-configure.log"
 
     log "make (это может занять несколько минут)..."
-    make 2>&1 | tee "$LOG_DIR/glibc-make.log"
+    make 2>&1 | tee "$LOG_DIR/glibc-make.log" || die "ошибка, лог: $LOG_DIR/glibc-make.log"
 
     log "make DESTDIR=$LFS install..."
-    make DESTDIR="$LFS" install 2>&1 | tee "$LOG_DIR/glibc-install.log"
+    make DESTDIR="$LFS" install 2>&1 | tee "$LOG_DIR/glibc-install.log" || die "ошибка, лог: $LOG_DIR/glibc-install.log"
 
     log "Патч ldd (RTLDLIST)..."
     sed '/RTLDLIST=/s@/usr@@g' -i "$LFS/usr/bin/ldd"
@@ -462,13 +469,13 @@ build_libstdcpp() {
                               --disable-nls \
                               --disable-libstdcxx-pch \
                               --with-gxx-include-dir="/tools/$LFS_TGT/include/c++/16.2.0" \
-        2>&1 | tee "$LOG_DIR/libstdcpp-configure.log"
+        2>&1 | tee "$LOG_DIR/libstdcpp-configure.log" || die "ошибка, лог: $LOG_DIR/libstdcpp-configure.log"
 
     log "make..."
-    make 2>&1 | tee "$LOG_DIR/libstdcpp-make.log"
+    make 2>&1 | tee "$LOG_DIR/libstdcpp-make.log" || die "ошибка, лог: $LOG_DIR/libstdcpp-make.log"
 
     log "make DESTDIR=$LFS install..."
-    make DESTDIR="$LFS" install 2>&1 | tee "$LOG_DIR/libstdcpp-install.log"
+    make DESTDIR="$LFS" install 2>&1 | tee "$LOG_DIR/libstdcpp-install.log" || die "ошибка, лог: $LOG_DIR/libstdcpp-install.log"
 
     log "Удаление .la файлов libtool..."
     rm -v "$LFS"/usr/lib/lib{stdc++{,exp,fs},supc++}.la
